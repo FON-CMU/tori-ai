@@ -20,6 +20,43 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## PostgreSQL + Prisma Setup
+
+1. Create your local env file:
+
+```bash
+cp .env.example .env
+```
+
+2. Update `DATABASE_URL` in `.env` to point to your PostgreSQL instance.
+
+3. Generate Prisma client:
+
+```bash
+npm run prisma:generate
+```
+
+4. Run the first migration:
+
+```bash
+npm run prisma:migrate -- --name init
+```
+
+5. Seed a demo user for login testing:
+
+```bash
+npm run db:seed
+```
+
+Demo credentials after seed:
+
+- Email: `demo@tori.ai`
+- Password: `Password123!`
+
+Login API endpoint:
+
+- `POST /api/login`
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
