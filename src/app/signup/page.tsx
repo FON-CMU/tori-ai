@@ -3,17 +3,17 @@
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 
-type LoginState = {
+type SignupState = {
   error: string;
   success: string;
 };
 
-export default function Home() {
+export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [state, setState] = useState<LoginState>({ error: "", success: "" });
+  const [state, setState] = useState<SignupState>({ error: "", success: "" });
 
   const isButtonDisabled = useMemo(() => {
     return isSubmitting || !email.trim() || !password.trim();
@@ -42,7 +42,7 @@ export default function Home() {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch("/api/login", {
+      const response = await fetch("/api/signup", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -54,7 +54,7 @@ export default function Home() {
 
       if (!response.ok) {
         setState({
-          error: data.message ?? "Login failed. Please try again.",
+          error: data.message ?? "Sign up failed. Please try again.",
           success: "",
         });
         return;
@@ -62,8 +62,9 @@ export default function Home() {
 
       setState({
         error: "",
-        success: data.message ?? "Login successful.",
+        success: data.message ?? "Account created successfully.",
       });
+      setPassword("");
     } catch {
       setState({
         error: "Could not connect to server.",
@@ -75,18 +76,18 @@ export default function Home() {
   };
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_15%_20%,#ffe6bd_0%,#ffe6bd00_42%),radial-gradient(circle_at_85%_80%,#bfe7db_0%,#bfe7db00_40%),linear-gradient(140deg,#f7f8fc_0%,#f3efe4_48%,#f2f6ec_100%)] px-4 py-12 font-sans">
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_12%_20%,#d0f1ff_0%,#d0f1ff00_38%),radial-gradient(circle_at_88%_78%,#ffe8c7_0%,#ffe8c700_42%),linear-gradient(145deg,#f2f8fb_0%,#f8f4eb_55%,#f3f8f0_100%)] px-4 py-12 font-sans">
       <div className="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(20,20,20,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(20,20,20,0.08)_1px,transparent_1px)] [background-size:28px_28px]" />
 
       <section className="relative w-full max-w-md rounded-3xl border border-black/10 bg-white/90 p-7 shadow-[0_30px_80px_-25px_rgba(20,20,20,0.45)] backdrop-blur md:p-9">
-        <p className="mb-2 text-xs font-semibold tracking-[0.25em] text-emerald-700">
+        <p className="mb-2 text-xs font-semibold tracking-[0.25em] text-cyan-700">
           TORI AI
         </p>
         <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
-          Sign in
+          Create account
         </h1>
         <p className="mt-2 text-sm text-zinc-600">
-          Use your email and password to access your workspace.
+          Sign up with email and password to start using your workspace.
         </p>
 
         <form className="mt-7 space-y-4" onSubmit={handleSubmit}>
@@ -102,7 +103,7 @@ export default function Home() {
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="name@company.com"
-              className="h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 outline-none ring-0 transition focus:border-emerald-600"
+              className="h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 outline-none ring-0 transition focus:border-cyan-600"
               required
             />
           </div>
@@ -114,12 +115,12 @@ export default function Home() {
             >
               Password
             </label>
-            <div className="flex h-11 items-center rounded-xl border border-zinc-300 bg-white pr-1 focus-within:border-emerald-600">
+            <div className="flex h-11 items-center rounded-xl border border-zinc-300 bg-white pr-1 focus-within:border-cyan-600">
               <input
                 id="password"
                 name="password"
                 type={showPassword ? "text" : "password"}
-                autoComplete="current-password"
+                autoComplete="new-password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="At least 8 characters"
@@ -155,14 +156,14 @@ export default function Home() {
             disabled={isButtonDisabled}
             className="mt-2 h-11 w-full rounded-xl bg-zinc-900 text-sm font-semibold text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
           >
-            {isSubmitting ? "Signing in..." : "Sign in"}
+            {isSubmitting ? "Creating account..." : "Create account"}
           </button>
         </form>
 
         <p className="mt-6 text-center text-sm text-zinc-600">
-          Don&apos;t have an account?{" "}
-          <Link href="/signup" className="font-semibold text-zinc-900 hover:underline">
-            Create one
+          Already have an account?{" "}
+          <Link href="/" className="font-semibold text-zinc-900 hover:underline">
+            Sign in
           </Link>
         </p>
       </section>
