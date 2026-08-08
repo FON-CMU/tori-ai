@@ -1,73 +1,60 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TORI — AI Secretary
 
-## Getting Started
+Chat-first web application for recording work against each CMU employee's Terms of Reference (TOR).
 
-First, run the development server:
+## Run with Docker
+
+Docker Compose starts PostgreSQL, applies the current Prisma schema, seeds the development account, and starts the production Next.js container:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+docker compose up --build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open <http://localhost:4600> and use **เข้าใช้บัญชีสาธิต**. Follow logs with `docker compose logs -f app`; stop services with `docker compose down`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Local database data persists in the `tori_postgres_data` volume. To intentionally remove it and start from an empty database:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+docker compose down --volumes
+```
 
-## PostgreSQL + Prisma Setup
+The Compose defaults are for local development only. Before exposing the stack, set strong `POSTGRES_PASSWORD` and `AUTH_SECRET` values in an uncommitted `.env`, configure CMU/OpenAI as needed, and place a reverse proxy with TLS and request limits in front of the application. Uploaded TOR files persist in the Docker volume `tori_tor_files`.
 
-1. Create your local env file:
+## Local setup
+
+Requirements: Node.js 20+, PostgreSQL, and npm.
 
 ```bash
 cp .env.example .env
-```
-
-2. Update `DATABASE_URL` in `.env` to point to your PostgreSQL instance.
-
-3. Generate Prisma client:
-
-```bash
+npm install
 npm run prisma:generate
-```
-
-4. Run the first migration:
-
-```bash
-npm run prisma:migrate -- --name init
-```
-
-5. Seed a demo user for login testing:
-
-```bash
+npm run prisma:migrate -- --name tori_foundation
 npm run db:seed
+npm run dev
 ```
 
-Demo credentials after seed:
+Set `AUTH_SECRET` to a random value of at least 32 characters. The development-only mock sign-in is available on `/login`; it is unavailable when `NODE_ENV=production`.
 
-- Email: `demo@tori.ai`
-- Password: `Password123!`
+CMU OIDC requires `CMU_CLIENT_ID`, `CMU_CLIENT_SECRET`, `CMU_ISSUER`, and `CMU_REDIRECT_URI`. AI operations require both `OPENAI_API_KEY` and `OPENAI_MODEL`. TOR uploads use `LOCAL_STORAGE_PATH` (default `./storage`, or `/data/tori` in Docker). No integration secret belongs in source control.
 
-Login API endpoint:
+## Quality commands
 
-- `POST /api/login`
+```bash
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+```
 
-## Learn More
+If Turbopack cannot create worker processes in a restricted CI sandbox, run `npx next build --webpack`; the production webpack build is also verified by this project.
 
-To learn more about Next.js, take a look at the following resources:
+## Architecture
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `src/app`: server-first pages and Route Handlers
+- `src/lib`: server integrations, environment validation, HTTP helpers, and shared validation
+- `src/server/services`: business transactions
+- `src/server/policies`: authorization policies
+- `prisma`: PostgreSQL schema and seed data
+- `tests`: unit, integration, E2E, and AI evaluation fixtures as they are added phase-by-phase
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Database access and third-party SDKs remain server-only. Every owner-scoped query must include the authenticated `userId`; UI visibility is never treated as authorization.

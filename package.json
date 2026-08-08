@@ -6,25 +6,43 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run lint && npm run typecheck && npm run test",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "docker:reset": "docker compose down --volumes"
   },
   "prisma": {
-    "seed": "node prisma/seed.mjs"
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "bcryptjs": "^3.0.3",
+    "docx": "^9.7.1",
+    "jose": "^6.2.8",
+    "mammoth": "^1.12.0",
     "next": "16.3.0",
+    "openai": "^7.4.0",
+    "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.19.1",
+    "pg": "^8.22.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pdfkit": "^0.17.6",
+    "@types/pg": "^8.20.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
@@ -32,6 +50,8 @@
     "eslint-config-next": "16.3.0",
     "prisma": "^7.9.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "^4.23.10",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   }
 }

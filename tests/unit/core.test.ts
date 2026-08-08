@@ -1,0 +1,198 @@
+import { describe, expect, it } from "vitest";
+import {
+  bangkokDateISO,
+  buddhistYearToGregorian,
+  calculateHours,
+  composeBangkokDateTime,
+  currentBuddhistYear,
+  gregorianToBuddhistYear,
+  parseThaiDateToISO,
+  parseTimeRange,
+} from "@/lib/date";
+import { normalizeTorExtraction, normalizeWorkExtraction } from "@/lib/validation/ai";
+import { normalizeAiModelId, normalizeOpenAiBaseUrl, matchAllowedModel, resolveChatModelCatalog } from "@/lib/validation/ai-settings";
+import { buildMissingFieldQuestion, deriveWorkTitle, findMissingFields, parseCategoryAnswer } from "@/lib/validation/work";
+import { canReadJa } from "@/server/policies/ownership";
+
+describe("TORI core business rules", () => {
+  it("converts Buddhist years", () => expect(buddhistYearToGregorian(2569)).toBe(2026));
+  it("converts Gregorian to Buddhist years", () => expect(gregorianToBuddhistYear(2026)).toBe(2569));
+  it("resolves current Buddhist year in Bangkok", () => {
+    expect(currentBuddhistYear(new Date("2026-08-08T12:00:00+07:00"))).toBe(2569);
+  });
+  it("calculates hours after a break", () => {
+    expect(calculateHours(new Date("2026-01-01T01:00:00Z"), new Date("2026-01-01T04:30:00Z"), 30)).toBe(3);
+  });
+  it("parses Thai Buddhist dates and today", () => {
+    expect(parseThaiDateToISO("วันที่ 8 สิงหาคม 2569")).toBe("2026-08-08");
+    expect(parseThaiDateToISO("วันนี้", new Date("2026-08-08T12:00:00+07:00"))).toBe("2026-08-08");
+  });
+  it("parses time ranges with dots", () => {
+    expect(parseTimeRange("08.30-16.30")).toEqual({ startTime: "08:30", endTime: "16:30" });
+  });
+  it("composes Bangkok datetimes", () => {
+    const start = composeBangkokDateTime("2026-08-08", "08:30");
+    expect(start?.toISOString()).toBe("2026-08-08T01:30:00.000Z");
+  });
+  it("asks only for missing date when times already known", () => {
+    expect(
+      buildMissingFieldQuestion(["startAt", "endAt"], {
+        eventDate: null,
+        startTime: "08:30",
+        endTime: "16:30",
+      }),
+    ).toContain("วันที่");
+  });
+  it("asks only for missing time when date already known", () => {
+    expect(
+      buildMissingFieldQuestion(["startAt", "endAt"], {
+        eventDate: bangkokDateISO(),
+        startTime: null,
+        endTime: null,
+      }),
+    ).toContain("ช่วงเวลา");
+  });
+  it("parses short Thai category answers", () => {
+    expect(parseCategoryAnswer("รับมอบหมาย")).toBe("ASSIGNED");
+    expect(parseCategoryAnswer("งานที่ได้รับมอบหมาย")).toBe("ASSIGNED");
+    expect(parseCategoryAnswer("งานประจำ")).toBe("ROUTINE");
+  });
+  it("does not reuse category question when torTopicId is missing", () => {
+    expect(
+      buildMissingFieldQuestion(["torTopicId"], {
+        category: "ASSIGNED",
+        topicCountForCategory: 0,
+        totalTopicCount: 3,
+      }),
+    ).toContain("ยังไม่มีหัวข้อ TOR");
+  });
+  it("derives work title from training narrative", () => {
+    expect(
+      deriveWorkTitle(
+        "วันนี้มีการอบรมเรื่อง AI ตั้งแต่เวลา 08.30-16.30 ที่คณะพยาบาลมช เนื้อหาคือ การเลือกใช้งาน model",
+      ),
+    ).toBe("เข้าร่วมอบรมเรื่อง AI");
+  });
+  it("detects missing required draft fields", () => {
+    expect(findMissingFields({ workTitle: "งาน", category: "ROUTINE" })).toContain("result");
+  });
+  it("requires location for assigned activity subtype", () => {
+    expect(
+      findMissingFields(
+        {
+          workTitle: "งาน",
+          category: "ASSIGNED",
+          torTopicId: "00000000-0000-4000-8000-000000000099",
+          description: "เข้าร่วมกิจกรรม",
+          startAt: new Date(),
+          endAt: new Date(),
+          totalHours: 2,
+          result: "เสร็จสิ้น",
+        },
+        "B_2_1",
+      ),
+    ).toContain("location");
+  });
+  it("requires competency for development training subtype", () => {
+    expect(
+      findMissingFields(
+        {
+          workTitle: "อบรม",
+          category: "DEVELOPMENT",
+          torTopicId: "00000000-0000-4000-8000-000000000099",
+          description: "เข้าร่วมอบรม",
+          location: "เชียงใหม่",
+          startAt: new Date(),
+          endAt: new Date(),
+          totalHours: 6,
+          result: "เสร็จสิ้น",
+        },
+        "C_3_1",
+      ),
+    ).toContain("competency");
+  });
+  it("prevents cross-user JA reads", () => {
+    expect(canReadJa({ userId: "a", unitId: "u", roles: ["EMPLOYEE"] }, { userId: "b" })).toBe(false);
+  });
+  it("normalizes Gemini display names to model ids", () => {
+    expect(normalizeAiModelId("Gemini 3.6 Flash")).toBe("gemini-3.6-flash");
+  });
+  it("preserves gateway model id casing", () => {
+    expect(normalizeAiModelId("Qwen/Qwen2.5-72B-Instruct")).toBe("Qwen/Qwen2.5-72B-Instruct");
+  });
+  it("normalizes CMU chatgen completion URLs to SDK baseURL", () => {
+    expect(normalizeOpenAiBaseUrl("https://chatgen.scmc.cmu.ac.th/api/chat/completions")).toBe(
+      "https://chatgen.scmc.cmu.ac.th/api",
+    );
+  });
+  it("builds chat model catalog with default first", () => {
+    const catalog = resolveChatModelCatalog({
+      provider: "OPENAI",
+      defaultModel: "gpt-4.1-mini",
+      configuredModels: ["gpt-4o", "gpt-4.1-mini"],
+    });
+    expect(catalog.defaultModel).toBe("gpt-4.1-mini");
+    expect(catalog.models[0]).toBe("gpt-4.1-mini");
+    expect(catalog.models).toContain("gpt-4o");
+  });
+  it("does not invent openai models for custom gateways", () => {
+    const catalog = resolveChatModelCatalog({
+      provider: "OPENAI",
+      defaultModel: "Qwen/Qwen2.5-72B",
+      configuredModels: [],
+      customGateway: true,
+    });
+    expect(catalog.models).toEqual(["Qwen/Qwen2.5-72B"]);
+  });
+  it("matches allowed models case-insensitively", () => {
+    expect(matchAllowedModel("qwen/qwen2.5-72b", ["Qwen/Qwen2.5-72B"])).toBe("Qwen/Qwen2.5-72B");
+  });
+  it("normalizes messy AI work extraction payloads", () => {
+    const parsed = normalizeWorkExtraction({
+      workTitle: "อบรม AI",
+      category: "development",
+      workSubtype: "3.1",
+      torTopicId: "not-a-uuid",
+      totalHours: "6.5",
+      confidence: 80,
+      missingFields: ["competency"],
+      nextQuestion: "ถามสมรรถนะ",
+    });
+    expect(parsed.category).toBe("DEVELOPMENT");
+    expect(parsed.workSubtype).toBe("C_3_1");
+    expect(parsed.torTopicId).toBeNull();
+    expect(parsed.totalHours).toBe(6.5);
+    expect(parsed.confidence).toBe(0.8);
+    expect(parsed.userFacingReply).toBe("ถามสมรรถนะ");
+  });
+  it("normalizes messy TOR extraction payloads", () => {
+    const parsed = normalizeTorExtraction({
+      topics: [
+        {
+          category: "งานประจำ",
+          title: "งานธุรการ",
+          confidence: "90",
+          page: 2,
+        },
+        {
+          category: "B",
+          title: "เป็นกรรมการประกันคุณภาพ",
+        },
+      ],
+    });
+    expect(parsed.topics).toHaveLength(2);
+    expect(parsed.topics[0]?.category).toBe("ROUTINE");
+    expect(parsed.topics[0]?.sourcePage).toBe(2);
+    expect(parsed.topics[0]?.confidence).toBe(0.9);
+    expect(parsed.topics[1]?.category).toBe("ASSIGNED");
+    expect(parsed.warnings).toEqual([]);
+  });
+  it("normalizes TOR topics grouped by Thai category keys", () => {
+    const parsed = normalizeTorExtraction({
+      งานประจำ: ["จัดทำรายงานประจำเดือน"],
+      งานเชิงพัฒนา: [{ title: "อบรม AI", description: "พัฒนาทักษะ" }],
+    });
+    expect(parsed.topics).toHaveLength(2);
+    expect(parsed.topics.map((topic) => topic.category).sort()).toEqual(["DEVELOPMENT", "ROUTINE"]);
+  });
+});

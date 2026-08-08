@@ -1,0 +1,73 @@
+name: tori
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tori}
+      POSTGRES_USER: ${POSTGRES_USER:-tori}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tori-local-password}
+      TZ: UTC
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  database-setup:
+    build:
+      context: .
+      target: database
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tori}:${POSTGRES_PASSWORD:-tori-local-password}@postgres:5432/${POSTGRES_DB:-tori}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: development
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tori}:${POSTGRES_PASSWORD:-tori-local-password}@postgres:5432/${POSTGRES_DB:-tori}?schema=public
+      DIRECT_URL: postgresql://${POSTGRES_USER:-tori}:${POSTGRES_PASSWORD:-tori-local-password}@postgres:5432/${POSTGRES_DB:-tori}?schema=public
+      AUTH_SECRET: ${AUTH_SECRET:-local-development-secret-change-before-production}
+      APP_URL: ${APP_URL:-http://localhost:4600}
+      APP_TIMEZONE: Asia/Bangkok
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_STORE_RESPONSES: ${OPENAI_STORE_RESPONSES:-false}
+      CMU_CLIENT_ID: ${CMU_CLIENT_ID:-}
+      CMU_CLIENT_SECRET: ${CMU_CLIENT_SECRET:-}
+      CMU_ISSUER: ${CMU_ISSUER:-}
+      CMU_REDIRECT_URI: ${CMU_REDIRECT_URI:-}
+      LOCAL_STORAGE_PATH: /data/tori
+      OCR_PROVIDER: ${OCR_PROVIDER:-mock}
+      OCR_API_KEY: ${OCR_API_KEY:-}
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "${APP_PORT:-4600}:4600"
+    volumes:
+      - tor_files:/data/tori
+    depends_on:
+      database-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4600/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  tor_files:
