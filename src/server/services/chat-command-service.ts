@@ -170,7 +170,9 @@ async function answerSavedCounts(userId: string) {
   if (recentJas.length) {
     lines.push("", "รายการล่าสุด:");
     for (const ja of recentJas) {
-      const date = ja.startAt.toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok" });
+      const date = ja.startAt
+        ? ja.startAt.toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok" })
+        : "ไม่ระบุวัน";
       const topic = ja.torTopic?.title ? ` · TOR: ${ja.torTopic.title}` : "";
       lines.push(`• ${ja.runningNumber} ${ja.workTitle} (${date})${topic}`);
     }

@@ -115,6 +115,16 @@ export function parseThaiDateToISO(text: string, now = new Date()) {
   return null;
 }
 
+/** Month+year only (e.g. มกราคม 2569) — not a concrete JA date */
+export function extractThaiMonthYearHint(text: string) {
+  if (parseThaiDateToISO(text)) return null;
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const monthNames = Object.keys(THAI_MONTHS).sort((a, b) => b.length - a.length).join("|");
+  const match = normalized.match(new RegExp(`(${monthNames})\\s*(?:พ\\.?\\s*ศ\\.?\\s*)?(\\d{4})`));
+  if (!match) return null;
+  return `${match[1]} ${match[2]}`;
+}
+
 /** Parse "08.30-16.30" / "08:30 น. ถึง 16:30" → start/end HH:mm */
 export function parseTimeRange(text: string) {
   const match = text.match(

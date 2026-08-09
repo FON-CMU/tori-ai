@@ -1,7 +1,15 @@
 import { z } from "zod";
 
 import type { WorkSubtype } from "@/lib/ai/work-system-prompt";
+import { workSubtypeLabel } from "@/lib/ai/work-system-prompt";
+import { extractThaiMonthYearHint } from "@/lib/date";
 import { categorySchema } from "./ai";
+
+const categoryLabel = {
+  ROUTINE: "งานประจำ",
+  ASSIGNED: "งานที่ได้รับมอบหมาย",
+  DEVELOPMENT: "งานเชิงพัฒนา",
+} as const;
 
 export const workInputSchema = z
   .object({
@@ -11,13 +19,28 @@ export const workInputSchema = z
     description: z.string().trim().min(1),
     relatedUnit: z.string().trim().optional(),
     location: z.string().trim().optional(),
-    startAt: z.coerce.date(),
-    endAt: z.coerce.date(),
-    totalHours: z.coerce.number().nonnegative(),
+    startAt: z.coerce.date().nullable().optional(),
+    endAt: z.coerce.date().nullable().optional(),
+    totalHours: z.coerce.number().nonnegative().nullable().optional(),
     result: z.string().trim().min(1),
+    /** ผู้ใช้ยืนยันว่าไม่ระบุวัน–เวลาของงานชิ้นนี้ */
+    scheduleSkipped: z.boolean().optional(),
   })
   .superRefine((value, context) => {
-    if (value.endAt < value.startAt) {
+    const hasStart = value.startAt instanceof Date && !Number.isNaN(value.startAt.getTime());
+    const hasEnd = value.endAt instanceof Date && !Number.isNaN(value.endAt.getTime());
+    const hasHours = typeof value.totalHours === "number" && Number.isFinite(value.totalHours);
+    if (value.scheduleSkipped) return;
+    if (!hasStart) {
+      context.addIssue({ code: "custom", path: ["startAt"], message: "กรุณาระบุวันเวลาเริ่ม" });
+    }
+    if (!hasEnd) {
+      context.addIssue({ code: "custom", path: ["endAt"], message: "กรุณาระบุวันเวลาสิ้นสุด" });
+    }
+    if (!hasHours) {
+      context.addIssue({ code: "custom", path: ["totalHours"], message: "กรุณาระบุจำนวนชั่วโมง" });
+    }
+    if (hasStart && hasEnd && value.endAt! < value.startAt!) {
       context.addIssue({ code: "custom", path: ["endAt"], message: "เวลาสิ้นสุดต้องไม่ก่อนเวลาเริ่ม" });
     }
   });
@@ -32,6 +55,8 @@ export const requiredDraftFields = [
   "totalHours",
   "result",
 ] as const;
+
+const scheduleDraftFields = new Set(["startAt", "endAt", "totalHours", "eventDate", "startTime", "endTime"]);
 
 function isBlank(value: unknown) {
   return value === null || value === undefined || value === "";
@@ -59,8 +84,58 @@ export function requiredFieldsForSubtype(subtype: WorkSubtype | null | undefined
 export function findMissingFields(
   draft: Record<string, unknown>,
   subtype?: WorkSubtype | null,
+  options?: { scheduleOptional?: boolean },
 ) {
-  return requiredFieldsForSubtype(subtype).filter((field) => isBlank(draft[field]));
+  return requiredFieldsForSubtype(subtype).filter((field) => {
+    if (options?.scheduleOptional && scheduleDraftFields.has(field)) return false;
+    return isBlank(draft[field]);
+  });
+}
+
+/** ผู้ใช้บอกว่าไม่ต้อง / ไม่สามารถระบุวัน–เวลา */
+export function isSkipScheduleIntent(message: string) {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  const compact = text.toLowerCase().replace(/\s+/g, "");
+  if (
+    /^(ไม่ต้องระบุ|ไม่ระบุ|ข้าม|ไม่มีวันเวลา|ไม่มีเวลา)(วัน|เวลา|ช่วงเวลา|วันที่)?([และกับ].*)?[!.。]*$/i.test(
+      compact,
+    )
+  ) {
+    return true;
+  }
+  return (
+    /ไม่(?:ต้อง|ได้|สามารถ)?(?:ระบุ|ใส่|ลง)?(?:วัน|เวลา|ช่วงเวลา|วันเวลา)/.test(text)
+    || /(?:ระบุ|ใส่|ลง)(?:วัน|เวลา|ช่วงเวลา|วันเวลา).{0,12}ไม่ได้/.test(text)
+    || /ข้าม(?:การ)?(?:ระบุ)?(?:วัน|เวลา|ช่วงเวลา)/.test(text)
+    || /ไม่มี(?:วัน|เวลา|ช่วงเวลา)(?:ที่)?(?:ชัด|แน่นอน|ระบุ)?/.test(text)
+    || /บันทึก(?:ไป)?(?:เลย)?(?:โดย)?ไม่(?:ต้อง)?(?:มี|ระบุ)(?:วัน|เวลา)/.test(text)
+  );
+}
+
+/** ผู้ใช้ยืนยันให้บันทึกร่างที่มีอยู่ตามนี้ (ข้ามวัน–เวลาที่ยังขาดได้) */
+export function isSaveAsIsIntent(message: string) {
+  const compact = message.trim().toLowerCase().replace(/\s+/g, "");
+  if (!compact) return false;
+  return (
+    /^(บันทึกตามนี้|บันทึกแบบนี้|บันทึกเลยตามนี้|เอาตามนี้|ตามนี้เลย|ตามนี้|โอเคตามนี้|ตกลงตามนี้|okตามนี้|saveasis|saveas-is)[!。.]*$/.test(
+      compact,
+    )
+    || /บันทึกตามนี้|บันทึกแบบนี้|เอาตามร่างนี้/.test(message.replace(/\s+/g, " ").trim())
+  );
+}
+
+/** ขาดแค่ฟิลด์วัน–เวลาเท่านั้นหรือไม่ */
+export function onlyScheduleFieldsMissing(missing: string[]) {
+  if (!missing.length) return false;
+  return missing.every((field) =>
+    field === "startAt"
+    || field === "endAt"
+    || field === "totalHours"
+    || field === "eventDate"
+    || field === "startTime"
+    || field === "endTime",
+  );
 }
 
 /** แปลงคำตอบสั้น ๆ ของผู้ใช้เป็นหมวด TOR */
@@ -94,13 +169,21 @@ export function parseCategoryAnswer(message: string) {
 export function inferCategoryFromWorkText(message: string) {
   const text = message.trim();
   if (!text) return null;
-  if (/อบรม|สัมมนา|ประชุม|ศึกษาดูงาน|workshop|training|พัฒนาตนเอง|เชิงพัฒนา/i.test(text)) {
+  if (
+    /อบรม|สัมมนา|ประชุม|ศึกษาดูงาน|workshop|training|พัฒนาตนเอง|เชิงพัฒนา|พัฒนาระบบ|พัฒนาซอฟต์แวร์|พัฒนาเว็บ|ปรับปรุงระบบ|edonation|e-donation/i.test(
+      text,
+    )
+  ) {
     return "DEVELOPMENT" as const;
   }
   if (/กรรมการ|คณะกรรมการ|กิจกรรม|บริการวิชาการ|มอบหมาย/i.test(text)) {
     return "ASSIGNED" as const;
   }
-  if (/งานประจำ|ประจำวัน|หน้าที่หลัก/i.test(text)) {
+  if (
+    /งานประจำ|ประจำวัน|หน้าที่หลัก|ดูแลระบบ|ระบบสารสนเทศ|งานบริหาร|งานธุรการ|อัปเดตระบบ|update\s*ระบบ|ดูแล\s*url|ดูแลเว็บ/i.test(
+      text,
+    )
+  ) {
     return "ROUTINE" as const;
   }
   return null;
@@ -114,7 +197,13 @@ export function inferSubtypeFromWorkText(
   if (!text) return null;
   if (category === "ROUTINE") return "A";
   if (category === "DEVELOPMENT") {
-    if (/ปรับปรุงกระบวนการ|พัฒนากระบวนการ|workflow/i.test(text)) return "C_3_2";
+    if (
+      /ปรับปรุงกระบวนการ|พัฒนากระบวนการ|workflow|พัฒนาระบบ|พัฒนาซอฟต์แวร์|พัฒนาเว็บ|ปรับปรุงระบบ|edonation|e-donation/i.test(
+        text,
+      )
+    ) {
+      return "C_3_2";
+    }
     if (/อบรม|สัมมนา|ประชุม|ศึกษาดูงาน|workshop|training/i.test(text)) return "C_3_1";
     return "C_3_1";
   }
@@ -141,9 +230,90 @@ export function deriveWorkTitle(message: string, description?: string | null) {
   const meeting = source.match(/(?:เข้าร่วม)?(?:การ)?ประชุม(?:เรื่อง|หัวข้อ)?\s*([^.\n]+?)(?:\s+ตั้งแต่|\s+เวลา|\s+ที่|\s+เนื้อหา|$)/i);
   if (meeting?.[1]) return `เข้าร่วมประชุมเรื่อง ${meeting[1].trim()}`.slice(0, 80);
 
+  const edonation = source.match(/พัฒนาระบบรับบริจาคออนไลน์\s*\(?\s*eDonation\s*\)?/i)
+    ?? source.match(/ระบบ\s*eDonation/i);
+  if (edonation?.[0]) return edonation[0].replace(/\s+/g, " ").trim().slice(0, 80);
+
+  const systemDev = source.match(/พัฒนาระบบ[^.\n]{0,40}/i);
+  if (systemDev?.[0]) return systemDev[0].trim().slice(0, 80);
+
+  const systemCare = source.match(/งานดูแลระบบ[^.\n]{0,40}|ดูแลระบบสารสนเทศ[^.\n]{0,40}/i);
+  if (systemCare?.[0]) return systemCare[0].trim().slice(0, 80);
+
   const short = source.split(/(?:ตั้งแต่|เวลา|ที่|เนื้อหา|เพื่อ)/)[0]?.trim();
   if (short && short.length >= 6) return short.slice(0, 80);
   return source.slice(0, 80);
+}
+
+function truncateText(value: string, max: number) {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+/** สรุปสิ่งที่ระบบเข้าใจแล้วก่อนถามฟิลด์ที่ขาด */
+export function buildDraftProgressAck(input: {
+  workTitle?: string | null;
+  category?: string | null;
+  workSubtype?: WorkSubtype | null;
+  topicTitle?: string | null;
+  description?: string | null;
+  location?: string | null;
+  relatedUnit?: string | null;
+  competency?: string | null;
+  result?: string | null;
+  userMessage?: string | null;
+  eventDate?: string | null;
+}) {
+  const lines: string[] = [];
+  if (input.workTitle) lines.push(`• ชื่องาน: ${input.workTitle}`);
+  if (input.category) {
+    lines.push(`• หมวด: ${categoryLabel[input.category as keyof typeof categoryLabel] ?? input.category}`);
+  }
+  if (input.workSubtype) lines.push(`• ประเภทย่อย: ${workSubtypeLabel[input.workSubtype]}`);
+  if (input.topicTitle) lines.push(`• หัวข้อ TOR: ${input.topicTitle}`);
+  if (input.description) lines.push(`• รายละเอียด: ${truncateText(input.description, 220)}`);
+  if (input.location) lines.push(`• สถานที่: ${input.location}`);
+  if (input.relatedUnit) lines.push(`• หน่วยงานที่เกี่ยวข้อง: ${input.relatedUnit}`);
+  if (input.competency) lines.push(`• สมรรถนะ: ${truncateText(input.competency, 120)}`);
+  if (input.result && input.result !== input.description) {
+    lines.push(`• ผลลัพธ์: ${truncateText(input.result, 120)}`);
+  }
+  if (!input.eventDate && input.userMessage) {
+    const monthHint = extractThaiMonthYearHint(input.userMessage);
+    if (monthHint) {
+      lines.push(`• ช่วงที่กล่าวถึง: ${monthHint} (ยังต้องระบุวันและเวลาที่ทำจริง)`);
+    }
+  }
+
+  if (!lines.length) return null;
+  return ["รับทราบแล้ว ดึงข้อมูลมาเป็นร่าง JA ดังนี้:", ...lines].join("\n");
+}
+
+/** ตอบแบบเลขา: สรุปที่เข้าใจ + ถามเฉพาะช่องที่ยังขาด */
+export function composeCollectingReply(input: {
+  acknowledgement?: string | null;
+  question?: string | null;
+  aiReply?: string | null;
+  fallback?: string;
+}) {
+  const question = input.question?.trim() || null;
+  const ack = input.acknowledgement?.trim() || null;
+  const ai = input.aiReply?.trim() || null;
+  const fallback = input.fallback?.trim() || "กรุณาให้ข้อมูลเพิ่มเติม";
+
+  if (ack && question) return `${ack}\n\n${question}`;
+  if (ack) return ack;
+  if (question && ai && ai !== question && !looksLikeOnlyMissingPrompt(ai)) {
+    return `${ai}\n\n${question}`;
+  }
+  return question || ai || fallback;
+}
+
+function looksLikeOnlyMissingPrompt(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length > 160) return false;
+  return /กรุณาระบุ|ขอ(?:ทราบ)?วัน|ช่วงเวลา|วันที่และช่วงเวลา/.test(normalized);
 }
 
 export function deriveDescription(message: string) {
@@ -187,6 +357,8 @@ export function buildMissingFieldQuestion(
     category?: string | null;
     topicCountForCategory?: number;
     totalTopicCount?: number;
+    /** มีชื่อ/รายละเอียดแล้ว — ถามวันเวลาแบบเลขารับทราบ ไม่ใช่คำถามเดียวโดด ๆ */
+    hasDraftSubstance?: boolean;
   },
 ) {
   if (!missing.length) return null;
@@ -197,14 +369,21 @@ export function buildMissingFieldQuestion(
     const hasDate = Boolean(partial?.eventDate);
     const hasStart = Boolean(partial?.startTime);
     const hasEnd = Boolean(partial?.endTime);
+    const soft = Boolean(partial?.hasDraftSubstance);
     if (!hasDate && !(hasStart && hasEnd)) {
-      return "กรุณาระบุวันที่และช่วงเวลาเริ่ม–สิ้นสุด (เช่น 8 สิงหาคม 2569 เวลา 08:30-16:30 น.)";
+      return soft
+        ? "ขอวันและช่วงเวลาที่ทำจริงอีกนิด เพื่อลงใน JA ได้ครบ (เช่น 15 มกราคม 2569 เวลา 08:30-16:30 น.) หรือพิมพ์ว่า “บันทึกตามนี้” / “ไม่ต้องระบุวันและช่วงเวลา” หากชิ้นงานนี้ระบุไม่ได้"
+        : "กรุณาระบุวันที่และช่วงเวลาเริ่ม–สิ้นสุด (เช่น 8 สิงหาคม 2569 เวลา 08:30-16:30 น.) หรือพิมพ์ว่า “บันทึกตามนี้” หากต้องการบันทึกโดยไม่ระบุวันเวลา";
     }
     if (!hasDate) {
-      return "กรุณาระบุวันที่ของงานนี้ (เช่น 8 สิงหาคม 2569 หรือ พิมพ์ว่าวันนี้)";
+      return soft
+        ? "ขอวันที่ของงานนี้อีกนิด (เช่น 15 มกราคม 2569 หรือพิมพ์ว่าวันนี้)"
+        : "กรุณาระบุวันที่ของงานนี้ (เช่น 8 สิงหาคม 2569 หรือ พิมพ์ว่าวันนี้)";
     }
     if (!hasStart || !hasEnd) {
-      return "กรุณาระบุช่วงเวลาเริ่มต้นและสิ้นสุด (เช่น 08:30-16:30 น.)";
+      return soft
+        ? "ขอช่วงเวลาเริ่มต้นและสิ้นสุดอีกนิด (เช่น 08:30-16:30 น.)"
+        : "กรุณาระบุช่วงเวลาเริ่มต้นและสิ้นสุด (เช่น 08:30-16:30 น.)";
     }
   }
 
@@ -240,4 +419,54 @@ export function buildMissingFieldQuestion(
     default:
       return `กรุณาให้ข้อมูลเพิ่ม: ${focus}`;
   }
+}
+
+/** สกัดร่าง JA แบบ heuristic เมื่อเกตเวย์ AI คืนคำตอบว่าง/ล้มเหลว */
+export function buildHeuristicWorkExtraction(message: string) {
+  const description = deriveDescription(message) ?? message.replace(/\s+/g, " ").trim().slice(0, 500);
+  const workTitle = deriveWorkTitle(message, description) ?? "งานปฏิบัติการ";
+  const category = inferCategoryFromWorkText(message);
+  const workSubtype = inferSubtypeFromWorkText(message, category);
+  const competency = deriveCompetency(message);
+  const monthHint = extractThaiMonthYearHint(message);
+  const missingFields = ["startAt", "endAt", "totalHours"];
+  if (!category) missingFields.unshift("category");
+  if (!competency && workSubtype === "C_3_1") missingFields.push("competency");
+
+  const periodNote = monthHint ? ` (ช่วงที่กล่าวถึง: ${monthHint})` : "";
+  const userFacingReply = [
+    `รับทราบแล้ว ดึงข้อมูลเบื้องต้นจากข้อความของคุณ:`,
+    `• ชื่องาน: ${workTitle}`,
+    category ? `• หมวด: ${categoryLabel[category]}` : null,
+    workSubtype ? `• ประเภทย่อย: ${workSubtypeLabel[workSubtype]}` : null,
+    `• รายละเอียด: ${description.slice(0, 220)}`,
+    monthHint ? `• ช่วงที่กล่าวถึง: ${monthHint} (ยังต้องระบุวันและเวลาที่ทำจริงสำหรับ JA)` : null,
+    "",
+    `ขอวันและช่วงเวลาที่ทำจริงอีกนิด เพื่อลงใน JA ได้ครบ (เช่น 15 มกราคม 2569 เวลา 08:30-16:30 น.)${periodNote}`,
+    `หากชิ้นงานนี้ระบุวันเวลาไม่ได้ พิมพ์ว่า “ไม่ต้องระบุวันและช่วงเวลา” ได้เลย`,
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
+
+  return {
+    workTitle,
+    category,
+    workSubtype,
+    torTopicId: null,
+    description,
+    relatedUnit: null,
+    location: null,
+    eventDate: null,
+    startTime: null,
+    endTime: null,
+    startAt: null,
+    endAt: null,
+    totalHours: null,
+    result: description,
+    competency,
+    missingFields,
+    confidence: 0.35,
+    nextQuestion: "ขอวันและช่วงเวลาที่ทำจริงอีกนิด (เช่น 15 มกราคม 2569 เวลา 08:30-16:30 น.) หรือพิมพ์ว่า “ไม่ต้องระบุวันและช่วงเวลา”",
+    userFacingReply,
+  };
 }

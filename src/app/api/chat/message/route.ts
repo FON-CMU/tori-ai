@@ -6,6 +6,9 @@ import { ApiError, errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
 import { sendChatMessage } from "@/server/services/chat-service";
 
+/** อนุญาตให้เรียก AI ช้าได้สูงสุด ~5 นาที (เกตเวย์ภายใน) */
+export const maxDuration = 300;
+
 export async function POST(request: Request) {
   const requestId = getRequestId(request);
   try {

@@ -33,6 +33,8 @@ type Draft = {
   result: string | null;
   missingFields: string[];
   readyToConfirm: boolean;
+  scheduleSkipped?: boolean;
+  canSaveAsIs?: boolean;
 };
 
 const suggestions = [
@@ -91,18 +93,40 @@ export function ChatWorkspace({
   const [waitingMs, setWaitingMs] = useState(0);
   const [, startTransition] = useTransition();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const waitStartedAt = useRef<number | null>(null);
+  const stickToBottomRef = useRef(true);
+
+  function scrollMessagesToBottom(behavior: ScrollBehavior = "smooth") {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    const top = scroller.scrollHeight;
+    if (typeof scroller.scrollTo === "function") {
+      scroller.scrollTo({ top, behavior });
+    } else {
+      scroller.scrollTop = top;
+    }
+  }
+
+  function onMessagesScroll() {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 96;
+  }
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, draft?.readyToConfirm, replying, waitingMs]);
+    if (!stickToBottomRef.current) return;
+    const frame = window.requestAnimationFrame(() => scrollMessagesToBottom("smooth"));
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, draft?.readyToConfirm, replying]);
 
   useEffect(() => {
     if (!replying || !waitStartedAt.current) return;
     const timer = window.setInterval(() => {
       if (waitStartedAt.current) setWaitingMs(Date.now() - waitStartedAt.current);
-    }, 100);
+    }, 250);
     return () => window.clearInterval(timer);
   }, [replying]);
 
@@ -196,6 +220,7 @@ export function ChatWorkspace({
     setBusy(true);
     setError(null);
     setSidebarOpen(false);
+    stickToBottomRef.current = true;
     try {
       const response = await fetch(`/api/chat/${id}`);
       const body = await response.json() as {
@@ -213,21 +238,25 @@ export function ChatWorkspace({
     }
   }
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const content = input.trim();
-    if (!content || busy) return;
+  async function sendMessage(content: string) {
+    const trimmed = content.trim();
+    if (!trimmed || busy) return;
 
+    stickToBottomRef.current = true;
     beginReplyWait();
     setError(null);
     setInput("");
-    setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content }]);
+    setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content: trimmed }]);
+
+    const controller = new AbortController();
+    const abortTimer = window.setTimeout(() => controller.abort(), 300_000);
 
     try {
       const response = await fetch("/api/chat/message", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ conversationId, message: content }),
+        body: JSON.stringify({ conversationId, message: trimmed }),
+        signal: controller.signal,
       });
       const body = await response.json() as {
         data?: {
@@ -276,10 +305,20 @@ export function ChatWorkspace({
       await applyChatActions(actions);
       startTransition(() => router.refresh());
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "ส่งข้อความไม่สำเร็จ");
+      if (reason instanceof DOMException && reason.name === "AbortError") {
+        setError("การตอบใช้เวลานานเกิน 5 นาที กรุณาลองใหม่ หรือเปลี่ยนโมเดลที่ตั้งค่า AI");
+      } else {
+        setError(reason instanceof Error ? reason.message : "ส่งข้อความไม่สำเร็จ");
+      }
     } finally {
+      window.clearTimeout(abortTimer);
       endReplyWait();
     }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    await sendMessage(input);
   }
 
   async function confirmJa() {
@@ -405,7 +444,7 @@ export function ChatWorkspace({
         </div>
       </aside>
 
-      <section className="relative flex min-w-0 flex-1 flex-col bg-[var(--apple-bg)]">
+      <section className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--apple-bg)]">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--apple-line)]/70 bg-[var(--apple-bg)]/80 px-4 backdrop-blur-xl md:px-6">
           <button
             type="button"
@@ -453,8 +492,12 @@ export function ChatWorkspace({
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-[720px] flex-col px-5 pb-44 pt-10 md:px-8 md:pt-16">
+        <div
+          ref={messagesScrollRef}
+          onScroll={onMessagesScroll}
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
+          <div className="mx-auto flex min-h-full w-full max-w-[720px] flex-col px-5 pb-8 pt-10 md:px-8 md:pt-16">
             {!hasActiveTor && messages.length === 0 ? (
               <div className="my-auto w-full pb-10 text-center">
                 <p className="text-[12px] font-medium tracking-[0.08em] text-[var(--apple-blue)] uppercase">
@@ -553,6 +596,27 @@ export function ChatWorkspace({
                   </div>
                 ) : null}
 
+                {draft?.canSaveAsIs && !replying ? (
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void sendMessage("บันทึกตามนี้")}
+                      className="rounded-full bg-[var(--apple-blue)] px-4 py-2 text-[13px] font-medium text-white transition hover:bg-[var(--apple-blue-hover)] disabled:opacity-50"
+                    >
+                      บันทึกตามนี้
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void sendMessage("ไม่ต้องระบุวันและช่วงเวลา")}
+                      className="rounded-full bg-black/[0.06] px-4 py-2 text-[13px] font-medium text-[var(--apple-ink)] transition hover:bg-black/[0.09] disabled:opacity-50"
+                    >
+                      ไม่ระบุวันเวลา
+                    </button>
+                  </div>
+                ) : null}
+
                 {draft?.readyToConfirm ? (
                   <div className="rounded-[22px] border border-[var(--apple-line)] bg-white p-5 shadow-[0_4px_24px_rgba(0,0,0,0.04)]">
                     <p className="text-[15px] font-semibold text-[var(--apple-ink)]">
@@ -600,16 +664,26 @@ export function ChatWorkspace({
                       ) : null}
                       <div className="flex gap-2">
                         <dt className="w-36 shrink-0 text-[var(--apple-muted)]">เริ่ม</dt>
-                        <dd>{draft.startAtLabel}</dd>
+                        <dd>{draft.scheduleSkipped && !draft.startAt ? "ไม่ระบุ" : draft.startAtLabel}</dd>
                       </div>
                       <div className="flex gap-2">
                         <dt className="w-36 shrink-0 text-[var(--apple-muted)]">สิ้นสุด</dt>
-                        <dd>{draft.endAtLabel}</dd>
+                        <dd>{draft.scheduleSkipped && !draft.endAt ? "ไม่ระบุ" : draft.endAtLabel}</dd>
                       </div>
                       <div className="flex gap-2">
                         <dt className="w-36 shrink-0 text-[var(--apple-muted)]">ชั่วโมง</dt>
-                        <dd>{draft.totalHours ?? "-"}</dd>
+                        <dd>
+                          {draft.scheduleSkipped && draft.totalHours === null
+                            ? "ไม่ระบุ"
+                            : (draft.totalHours ?? "-")}
+                        </dd>
                       </div>
+                      {draft.scheduleSkipped ? (
+                        <div className="flex gap-2">
+                          <dt className="w-36 shrink-0 text-[var(--apple-muted)]">หมายเหตุ</dt>
+                          <dd>บันทึกโดยไม่ระบุวันและช่วงเวลา</dd>
+                        </div>
+                      ) : null}
                       {draft.workSubtype !== "C_3_1" ? (
                         <div className="flex gap-2">
                           <dt className="w-36 shrink-0 text-[var(--apple-muted)]">ผลลัพธ์</dt>
@@ -631,14 +705,14 @@ export function ChatWorkspace({
                 {error ? (
                   <p className="rounded-[18px] bg-red-50 px-4 py-3 text-[14px] text-red-700">{error}</p>
                 ) : null}
-                <div ref={bottomRef} />
+                <div ref={bottomRef} className="h-px w-full shrink-0" aria-hidden />
               </div>
             )}
           </div>
         </div>
 
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-[var(--apple-bg)] via-[var(--apple-bg)]/95 to-transparent px-4 pb-5 pt-16 md:px-6">
-          <form onSubmit={submit} className="pointer-events-auto mx-auto max-w-[720px]">
+        <div className="shrink-0 border-t border-[var(--apple-line)]/60 bg-[var(--apple-bg)]/95 px-4 pb-5 pt-3 backdrop-blur-xl md:px-6">
+          <form onSubmit={submit} className="mx-auto max-w-[720px]">
             {error && messages.length === 0 ? (
               <p className="mb-2 rounded-[18px] bg-red-50 px-4 py-3 text-[14px] text-red-700">{error}</p>
             ) : null}
