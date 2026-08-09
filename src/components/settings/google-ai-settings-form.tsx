@@ -19,13 +19,17 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
 
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (!settings.configured && !apiKey.trim()) {
+      setMessage("กรุณาใส่ API key");
+      return;
+    }
     setBusy(true);
     setMessage(null);
     try {
       const response = await fetch("/api/settings/google-ai-studio", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey, model }),
+        body: JSON.stringify({ apiKey: apiKey.trim() || undefined, model }),
       });
       const body = await response.json() as { data?: Settings; error?: { message?: string } };
       if (!response.ok || !body.data) throw new Error(body.error?.message ?? "บันทึกไม่สำเร็จ");
@@ -71,6 +75,8 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
     }
   }
 
+  const canSave = Boolean(model.trim()) && (settings.configured || Boolean(apiKey.trim()));
+
   return (
     <div className="max-w-2xl rounded-2xl border border-stone-200 bg-white p-6 shadow-sm md:p-8">
       <div className="flex justify-between gap-4">
@@ -95,13 +101,13 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
           <div className="mt-2 flex rounded-xl border border-stone-300 focus-within:border-blue-600">
             <input
               id="google-key"
-              required
-              minLength={20}
+              required={!settings.configured}
+              minLength={settings.configured ? undefined : 20}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               type={show ? "text" : "password"}
               autoComplete="off"
-              placeholder="ใส่ API key จาก Google AI Studio"
+              placeholder={settings.configured ? "ใส่คีย์ใหม่เมื่อต้องการเปลี่ยน" : "ใส่ API key จาก Google AI Studio"}
               className="h-12 min-w-0 flex-1 rounded-xl px-3 font-mono text-sm outline-none"
             />
             <button type="button" onClick={() => setShow(!show)} className="px-3 text-xs text-stone-500">
@@ -133,7 +139,7 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
         ) : null}
         <div className="flex flex-wrap gap-3">
           <button
-            disabled={busy || !apiKey.trim() || !model.trim()}
+            disabled={busy || !canSave}
             className="rounded-xl bg-blue-700 px-5 py-3 text-sm font-medium text-white disabled:opacity-50"
           >
             {busy ? "กำลังดำเนินการ…" : "บันทึกและใช้งาน"}

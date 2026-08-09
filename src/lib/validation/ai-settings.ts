@@ -66,7 +66,11 @@ const baseUrlSchema = z.preprocess(
 );
 
 export const aiSettingsSchema = z.object({
-  apiKey: apiKeySchema,
+  // ว่างได้เมื่อมีคีย์เดิมอยู่แล้ว — แก้เฉพาะโมเดลโดยไม่ต้องพิมพ์คีย์ใหม่
+  apiKey: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    apiKeySchema.optional(),
+  ),
   model: modelSchema,
 });
 
@@ -91,10 +95,22 @@ const OPENAI_CHAT_MODEL_DEFAULTS = [
   "o4-mini",
 ];
 
+/**
+ * ตัวเลือกตั้งต้นในดรอปดาวน์เมื่อผู้ดูแลยังไม่ได้กำหนดรายการเอง
+ * ยิงจริงกับ generativelanguage.googleapis.com ด้วยคีย์ฟรี (2026-08-09):
+ * ตระกูล 2.x ตายหมด — 2.5-flash/2.5-flash-lite คืน 404 "no longer available
+ * to new users" ส่วน 2.0-flash/2.5-pro/pro-latest คืน 429 quota จึงเหลือแต่ 3.x
+ * เรียงจากเร็วสุดก่อน: 3.6-flash กับ flash-latest ใช้ได้แต่หน่วง ~30 วินาที
+ * ต่อคำขอและเคยคืน 503 ตอนคนใช้เยอะ จึงไม่ควรอยู่หัวรายการ
+ * รายการนี้เป็นแค่ข้อเสนอ — โมเดลที่ผู้ดูแลบันทึกไว้ถูกเติมเข้าลิสต์เสมอ
+ * โดย resolveChatModelCatalog ฉะนั้นคีย์แบบเสียเงินยังพิมพ์ชื่อ pro เองได้
+ */
 const GOOGLE_CHAT_MODEL_DEFAULTS = [
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-2.5-pro",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-lite-latest",
+  "gemini-3-flash-preview",
   "gemini-3.6-flash",
 ];
 
