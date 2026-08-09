@@ -39,6 +39,12 @@ enum TorCategory {
   DEVELOPMENT
 }
 
+enum TorTopicKind {
+  SECTION
+  TOPIC
+  SUBITEM
+}
+
 enum TopicStatus {
   DRAFT
   CONFIRMED
@@ -200,24 +206,37 @@ model TorPage {
 }
 
 model TorTopic {
-  id            String      @id @default(uuid()) @db.Uuid
-  torDocumentId String      @db.Uuid
-  torDocument   TorDocument @relation(fields: [torDocumentId], references: [id], onDelete: Cascade)
-  userId        String      @db.Uuid
-  user          User        @relation(fields: [userId], references: [id])
+  id            String       @id @default(uuid()) @db.Uuid
+  torDocumentId String       @db.Uuid
+  torDocument   TorDocument  @relation(fields: [torDocumentId], references: [id], onDelete: Cascade)
+  userId        String       @db.Uuid
+  user          User         @relation(fields: [userId], references: [id])
   category      TorCategory
+  kind          TorTopicKind @default(TOPIC)
+  /// ป้ายหมวดตามฟอร์ม เช่น "3. ภาระงานเชิงพัฒนา"
+  sectionLabel  String?
   code          String?
   title         String
   description   String?
+  hoursPerWeek  Decimal?     @db.Decimal(6, 2)
+  sortOrder     Int          @default(0)
+  /// true = ใช้จับคู่ JA (ปกติเป็น TOPIC)
+  matchable     Boolean      @default(true)
+  parentId      String?      @db.Uuid
+  parent        TorTopic?    @relation("TorTopicTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children      TorTopic[]   @relation("TorTopicTree")
   sourcePage    Int?
-  status        TopicStatus @default(DRAFT)
+  status        TopicStatus  @default(DRAFT)
   workDrafts    WorkDraft[]
   jaRecords     JaRecord[]
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
   @@index([userId, status])
   @@index([torDocumentId, category])
+  @@index([torDocumentId, sortOrder])
+  @@index([parentId])
+  @@index([torDocumentId, matchable])
 }
 
 model Conversation {

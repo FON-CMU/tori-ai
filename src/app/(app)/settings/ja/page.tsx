@@ -1,63 +1,92 @@
-import { JaExportButtons } from "@/components/ja/ja-export-buttons";
+import { JaTorFormSection } from "@/components/ja/ja-tor-form-section";
+import { TorJaExportButtons } from "@/components/ja/tor-ja-export-buttons";
 import { requirePageSession } from "@/lib/auth/session";
-import { prisma } from "@/lib/prisma";
-
-const categoryLabel = {
-  ROUTINE: "งานประจำ",
-  ASSIGNED: "งานที่ได้รับมอบหมาย",
-  DEVELOPMENT: "งานเชิงพัฒนา",
-} as const;
+import {
+  listJaReportDocuments,
+  loadJaReportDocument,
+} from "@/server/services/ja-report-service";
 
 export default async function SettingsJaPage() {
   const { userId } = await requirePageSession();
-  const rows = await prisma.jaRecord.findMany({
-    where: { userId },
-    orderBy: { startAt: "desc" },
-    take: 50,
-    include: {
-      torTopic: { select: { title: true } },
-    },
-  });
+  const docs = await listJaReportDocuments(userId);
+  const reports = await Promise.all(docs.map((doc) => loadJaReportDocument(userId, doc.id)));
 
   return (
     <section>
       <p className="text-sm font-medium text-teal-700">งาน</p>
-      <h1 className="mt-2 text-3xl font-semibold">รายการปฏิบัติงาน</h1>
-      <p className="mt-2 text-stone-600">
-        งานที่บันทึกผ่าน TORI สามารถส่งออกเป็นแบบฟอร์ม Word หรือ PDF ได้
+      <h1 className="mt-2 text-3xl font-semibold">รายงานผลการปฏิบัติงานจริง</h1>
+      <p className="mt-2 max-w-3xl text-stone-600">
+        แสดงทั้งฉบับตามฟอร์ม TOR — ซ้ายคือภาระงานตาม TOR ขวาคือผลการปฏิบัติงานจริง (JA)
+        โดยชม./สัปดาห์ฝั่ง JA เป็น 0 ตามแบบ และส่งออกได้ทั้งฉบับเป็น Word/PDF
       </p>
-      <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white">
-        {rows.length ? (
-          rows.map((row) => (
-            <article
-              key={row.id}
-              className="flex flex-col gap-3 border-b border-stone-100 p-5 last:border-0 sm:flex-row sm:items-start sm:justify-between"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <strong className="text-stone-900">{row.workTitle}</strong>
-                  <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-xs text-stone-600">
-                    {categoryLabel[row.category]}
-                  </span>
+
+      <div className="mt-6 space-y-8">
+        {reports.length ? (
+          reports.map((report) => (
+            <article key={report.id} className="rounded-2xl border border-stone-200 bg-white p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-stone-900">{report.fileName}</h2>
+                  <p className="mt-1 text-sm text-stone-500">
+                    พ.ศ. {report.year} · {report.sections.reduce((sum, section) => sum + section.topics.length, 0)}{" "}
+                    หัวข้อ TOR ·{" "}
+                    {report.sections.reduce(
+                      (sum, section) => sum + section.topics.reduce((inner, topic) => inner + topic.jas.length, 0),
+                      0,
+                    ) + report.orphanJas.length}{" "}
+                    รายการ JA
+                  </p>
                 </div>
-                <p className="mt-1 text-sm text-stone-500">
-                  {row.runningNumber} ·{" "}
-                  {row.startAt.toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok" })} ·{" "}
-                  {row.totalHours.toString()} ชม.
-                </p>
-                {row.torTopic ? (
-                  <p className="mt-1 text-xs text-stone-500">TOR: {row.torTopic.title}</p>
-                ) : null}
-                <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">{row.description}</p>
-                <p className="mt-1 line-clamp-2 text-sm leading-6 text-stone-500">
-                  ผลลัพธ์: {row.result}
-                </p>
+                <TorJaExportButtons torDocumentId={report.id} year={report.year} />
               </div>
-              <JaExportButtons id={row.id} runningNumber={row.runningNumber} />
+
+              <div className="mt-5 space-y-5">
+                {report.sections.map((section) => (
+                  <JaTorFormSection
+                    key={section.key}
+                    label={section.label}
+                    title={section.title}
+                    topics={section.topics.map((topic) => ({
+                      id: topic.id,
+                      code: topic.code,
+                      title: topic.title,
+                      description: topic.description,
+                      hoursPerWeek: topic.hoursPerWeek,
+                      children: topic.children.map((child) => ({
+                        id: child.id,
+                        code: child.code,
+                        title: child.title,
+                        description: child.description,
+                      })),
+                      jas: topic.jas,
+                    }))}
+                  />
+                ))}
+
+                {report.orphanJas.length ? (
+                  <JaTorFormSection
+                    label="รายการที่ยังไม่ผูกหัวข้อ TOR"
+                    title=""
+                    topics={[
+                      {
+                        id: `${report.id}-orphan`,
+                        code: null,
+                        title: "ยังไม่ระบุหัวข้อตาม TOR",
+                        description: null,
+                        hoursPerWeek: null,
+                        children: [],
+                        jas: report.orphanJas,
+                      },
+                    ]}
+                  />
+                ) : null}
+              </div>
             </article>
           ))
         ) : (
-          <p className="p-8 text-center text-stone-500">ยังไม่มีรายการงาน</p>
+          <div className="rounded-2xl border border-stone-200 bg-white p-8 text-center text-stone-500">
+            ยังไม่มีเอกสาร TOR สำหรับสร้างรายงาน — ไปที่ตั้งค่า → TOR เพื่ออัปโหลดก่อน
+          </div>
         )}
       </div>
     </section>

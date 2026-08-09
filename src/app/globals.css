@@ -2,17 +2,27 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #1d1d1f;
+  --apple-bg: #f5f5f7;
+  --apple-surface: #ffffff;
+  --apple-ink: #1d1d1f;
+  --apple-muted: #86868b;
+  --apple-line: #d2d2d7;
+  --apple-blue: #0071e3;
+  --apple-blue-hover: #0077ed;
+  --apple-sidebar: #fbfbfd;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: system-ui, sans-serif;
+  --font-sans: "SF Pro Display", "SF Pro Text", "Noto Sans Thai", system-ui, sans-serif;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: "Noto Sans Thai", Tahoma, system-ui, sans-serif;
+  font-family: "SF Pro Text", "Noto Sans Thai", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }

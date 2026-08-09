@@ -97,21 +97,43 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
     if (!extraction.topics.length) throw new Error("NO_TOPICS");
 
     await prisma.$transaction(async (tx) => {
-      await tx.torTopic.deleteMany({
-        where: { torDocumentId: document.id, status: { not: "CONFIRMED" } },
+      // ตัด parent ก่อน แล้วลบทั้งชุดเพื่อแทนที่ด้วยโครงใหม่ตามไฟล์
+      await tx.torTopic.updateMany({
+        where: { torDocumentId: document.id },
+        data: { parentId: null },
       });
-      await tx.torTopic.createMany({
-        data: extraction.topics.map((topic) => ({
-          torDocumentId: document.id,
-          userId,
-          category: topic.category,
-          code: topic.code,
-          title: topic.title,
-          description: topic.description,
-          sourcePage: topic.sourcePage,
-          status: activate ? "CONFIRMED" : "DRAFT",
-        })),
-      });
+      await tx.torTopic.deleteMany({ where: { torDocumentId: document.id } });
+
+      const keyToId = new Map<string, string>();
+      const sorted = [...extraction.topics].sort((a, b) => a.sortOrder - b.sortOrder);
+
+      for (const topic of sorted) {
+        const parentId = topic.parentKey ? keyToId.get(topic.parentKey) ?? null : null;
+        const created = await tx.torTopic.create({
+          data: {
+            torDocumentId: document.id,
+            userId,
+            category: topic.category,
+            kind: topic.kind,
+            sectionLabel: topic.sectionLabel,
+            code: topic.code,
+            title: topic.title,
+            description: topic.description,
+            hoursPerWeek:
+              topic.hoursPerWeek === null || topic.hoursPerWeek === undefined
+                ? null
+                : topic.hoursPerWeek,
+            sortOrder: topic.sortOrder,
+            matchable: topic.matchable,
+            parentId,
+            sourcePage: topic.sourcePage,
+            status: activate ? "CONFIRMED" : "DRAFT",
+          },
+          select: { id: true },
+        });
+        keyToId.set(topic.selfKey, created.id);
+      }
+
       await tx.torDocument.update({
         where: { id: document.id },
         data: {
@@ -125,7 +147,10 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
 
     return prisma.torDocument.findUniqueOrThrow({
       where: { id: document.id },
-      include: { pages: true, topics: true },
+      include: {
+        pages: true,
+        topics: { orderBy: [{ sortOrder: "asc" }, { title: "asc" }] },
+      },
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : "unknown error";

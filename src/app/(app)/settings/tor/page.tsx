@@ -1,5 +1,6 @@
 import { TorAnalyzeButton } from "@/components/tor/tor-analyze-button";
 import { TorDeleteButton } from "@/components/tor/tor-delete-button";
+import { TorOutline } from "@/components/tor/tor-outline";
 import { TorProcessButton } from "@/components/tor/tor-process-button";
 import { TorUploader } from "@/components/tor/tor-uploader";
 import { TorYearSelect } from "@/components/tor/tor-year-select";
@@ -16,19 +17,13 @@ const statusLabel = {
   ARCHIVED: "เก็บถาวร",
 } as const;
 
-const categoryLabel = {
-  ROUTINE: "งานประจำ",
-  ASSIGNED: "งานที่ได้รับมอบหมาย",
-  DEVELOPMENT: "งานเชิงพัฒนา",
-} as const;
-
 export default async function SettingsTorPage() {
   const { userId } = await requirePageSession();
   const docs = await prisma.torDocument.findMany({
     where: { userId },
     orderBy: [{ year: "desc" }, { version: "desc" }],
     include: {
-      topics: { orderBy: [{ category: "asc" }, { title: "asc" }] },
+      topics: { orderBy: [{ sortOrder: "asc" }, { title: "asc" }] },
       pages: { orderBy: { pageNumber: "asc" } },
     },
   });
@@ -38,14 +33,15 @@ export default async function SettingsTorPage() {
       <p className="text-sm font-medium text-teal-700">เอกสาร</p>
       <h1 className="mt-2 text-3xl font-semibold">TOR ของฉัน</h1>
       <p className="mt-2 text-stone-600">
-        อัปโหลดแล้วระบบจะอ่านเอกสารและให้ AI แยกหัวข้อเป็นงานประจำ / งานที่ได้รับมอบหมาย / งานเชิงพัฒนา
-        โดยอัตโนมัติ เพื่อใช้บันทึก JA ในหน้าแชท
+        อัปโหลดแล้วระบบจะอ่านโครงตามฟอร์มในไฟล์ (หมวด → หัวข้อภาระงาน → รายการย่อย + ชม./สัปดาห์)
+        เพื่อใช้จับคู่บันทึก JA ในหน้าแชท
       </p>
       <TorUploader maxSizeMb={env.MAX_TOR_FILE_SIZE_MB} />
       <div className="mt-6 space-y-4">
         {docs.map((doc) => {
           const hasPages = doc.pages.length > 0;
           const hasTopics = doc.topics.length > 0;
+          const matchableCount = doc.topics.filter((topic) => topic.matchable).length;
           const needsAnalyze = hasPages && !hasTopics;
           const needsProcess = !hasPages || ["UPLOADED", "FAILED"].includes(doc.status);
 
@@ -60,7 +56,7 @@ export default async function SettingsTorPage() {
                     </span>
                   </div>
                   <p className="mt-1 text-sm text-stone-500">
-                    เวอร์ชัน {doc.version} · {doc.pages.length} หน้า · {doc.topics.length} หัวข้อ ·{" "}
+                    เวอร์ชัน {doc.version} · {doc.pages.length} หน้า · {matchableCount} หัวข้อจับคู่ JA ·{" "}
                     {doc.createdAt.toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })}
                   </p>
                 </div>
@@ -86,16 +82,16 @@ export default async function SettingsTorPage() {
                 <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                   <p className="text-sm font-medium text-emerald-950">TOR พร้อมใช้ในแชทแล้ว</p>
                   <p className="mt-1 text-sm text-emerald-900/80">
-                    ไปที่หน้าแชทเพื่อเล่างาน แล้วให้ TORI จัดหมวดและบันทึกเป็น JA
+                    ไปที่หน้าแชทเพื่อเล่างาน แล้วให้ TORI จับคู่หัวข้อตามฟอร์มด้านล่างและบันทึกเป็น JA
                   </p>
                 </div>
               ) : null}
 
               {needsAnalyze ? (
                 <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4">
-                  <p className="text-sm font-medium text-blue-900">ขั้นถัดไป: วิเคราะห์หัวข้อด้วย AI</p>
+                  <p className="text-sm font-medium text-blue-900">ขั้นถัดไป: วิเคราะห์โครง TOR ด้วย AI</p>
                   <p className="mt-1 text-sm text-blue-800/80">
-                    อ่านข้อความจากเอกสารแล้ว แต่ยังแยกหัวข้อไม่สำเร็จ กดปุ่มด้านล่างเพื่อลองอีกครั้ง
+                    อ่านข้อความจากเอกสารแล้ว แต่ยังแยกโครงไม่สำเร็จ กดปุ่มด้านล่างเพื่อลองอีกครั้ง
                   </p>
                   <div className="mt-3">
                     <TorAnalyzeButton id={doc.id} />
@@ -109,7 +105,7 @@ export default async function SettingsTorPage() {
                     {hasPages ? "ประมวลผลเอกสารอีกครั้ง" : "ยังไม่มีข้อความจากเอกสาร"}
                   </p>
                   <p className="mt-1 text-sm text-amber-800/80">
-                    ระบบจะอ่านไฟล์แล้วแยกหัวข้อด้วย AI อัตโนมัติ
+                    ระบบจะอ่านไฟล์แล้วแยกโครงตามฟอร์มด้วย AI อัตโนมัติ
                   </p>
                   <div className="mt-3">
                     <TorProcessButton id={doc.id} />
@@ -134,19 +130,11 @@ export default async function SettingsTorPage() {
               {hasTopics ? (
                 <div className="mt-5 border-t border-stone-100 pt-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h3 className="text-sm font-semibold">หัวข้อ TOR ตามหมวด</h3>
+                    <h3 className="text-sm font-semibold">โครง TOR ตามฟอร์มในไฟล์</h3>
                     {doc.status !== "ACTIVE" ? <TorAnalyzeButton id={doc.id} /> : null}
                   </div>
-                  <div className="mt-3 grid gap-2 md:grid-cols-2">
-                    {doc.topics.map((topic) => (
-                      <div key={topic.id} className="rounded-xl border border-stone-200 p-3">
-                        <span className="text-xs font-medium text-teal-700">{categoryLabel[topic.category]}</span>
-                        <p className="mt-1 text-sm font-medium">{topic.title}</p>
-                        {topic.description ? (
-                          <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{topic.description}</p>
-                        ) : null}
-                      </div>
-                    ))}
+                  <div className="mt-3">
+                    <TorOutline topics={doc.topics} />
                   </div>
                 </div>
               ) : hasPages ? (

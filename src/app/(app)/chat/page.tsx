@@ -12,7 +12,13 @@ export default async function ChatPage() {
       take: 20,
     }),
     prisma.torTopic.count({
-      where: { userId, status: "CONFIRMED", torDocument: { status: "ACTIVE" } },
+      where: {
+        userId,
+        status: "CONFIRMED",
+        matchable: true,
+        kind: "TOPIC",
+        torDocument: { status: "ACTIVE" },
+      },
     }),
   ]);
 

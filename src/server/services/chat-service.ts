@@ -28,6 +28,7 @@ import {
   parseCategoryAnswer,
 } from "@/lib/validation/work";
 import { resolveOpenAiSettings } from "@/server/services/ai-settings-service";
+import { tryHandleChatCommand } from "@/server/services/chat-command-service";
 import { confirmJa } from "@/server/services/ja-service";
 
 const categoryLabel = {
@@ -237,37 +238,56 @@ function buildReviewMessage(input: {
   totalHours: number | null;
   result: string | null;
 }) {
+  const isC31 = input.workSubtype === "C_3_1";
   const lines = [
-    "สรุปรายการที่จะบันทึกเป็น JA กรุณาตรวจสอบก่อนยืนยัน:",
+    "สรุปร่างผลการปฏิบัติงานจริง (JA) ให้ตรวจสอบก่อนยืนยัน:",
     `• ชื่องาน: ${input.workTitle ?? "-"}`,
     `• หมวด: ${input.category ? categoryLabel[input.category as keyof typeof categoryLabel] : "-"}`,
     `• ประเภทย่อย: ${input.workSubtype ? workSubtypeLabel[input.workSubtype] : "-"}`,
     `• หัวข้อ TOR: ${input.topicTitle ?? "-"}`,
     `• รายละเอียด: ${input.description ?? "-"}`,
     `• สถานที่: ${input.location ?? "-"}`,
-    `• หน่วยงานที่เกี่ยวข้อง: ${input.relatedUnit ?? "-"}`,
-    `• ความรู้/ทักษะ/สมรรถนะ: ${input.competency ?? "-"}`,
+  ];
+  if (input.relatedUnit) {
+    lines.push(`• หน่วยงานที่เกี่ยวข้อง: ${input.relatedUnit}`);
+  }
+  if (isC31 || input.competency) {
+    lines.push(`• ความรู้/ทักษะ/สมรรถนะ: ${input.competency ?? "-"}`);
+  }
+  lines.push(
     `• เริ่ม: ${formatThaiDateTime(input.startAt)}`,
     `• สิ้นสุด: ${formatThaiDateTime(input.endAt)}`,
     `• ชั่วโมง: ${input.totalHours ?? "-"}`,
-    `• ผลลัพธ์: ${input.result ?? "-"}`,
+  );
+  if (!isC31) {
+    lines.push(`• ผลลัพธ์: ${input.result ?? "-"}`);
+  }
+  lines.push(
     "",
     "หากถูกต้อง ให้กดปุ่ม “ยืนยันบันทึก JA” ด้านล่าง หรือพิมพ์ “ยืนยัน”",
-    "ยังไม่บันทึกลงฐานข้อมูลจนกว่าจะกดยืนยัน",
-  ];
+    "รายการนี้จะไปอยู่ในช่องผลการปฏิบัติงานจริงของรายงานทั้งฉบับ",
+  );
   return lines.join("\n");
 }
 
 async function loadActiveTopics(userId: string) {
   return prisma.torTopic.findMany({
-    where: { userId, status: "CONFIRMED", torDocument: { status: "ACTIVE" } },
-    orderBy: [{ category: "asc" }, { title: "asc" }],
+    where: {
+      userId,
+      status: "CONFIRMED",
+      matchable: true,
+      kind: "TOPIC",
+      torDocument: { status: "ACTIVE" },
+    },
+    orderBy: [{ sortOrder: "asc" }, { category: "asc" }, { title: "asc" }],
     select: {
       id: true,
       category: true,
       title: true,
       description: true,
       code: true,
+      sectionLabel: true,
+      hoursPerWeek: true,
       torDocument: { select: { id: true, year: true, fileName: true } },
     },
   });
@@ -353,6 +373,19 @@ export async function getConversation(userId: string, conversationId: string) {
   };
 }
 
+/** ลบแชท (archive) */
+export async function deleteConversation(userId: string, conversationId: string) {
+  const conversation = await prisma.conversation.findFirst({
+    where: { id: conversationId, userId, status: { not: "ARCHIVED" } },
+  });
+  if (!conversation) throw new ApiError(404, "CONVERSATION_NOT_FOUND", "ไม่พบการสนทนา");
+  await prisma.conversation.update({
+    where: { id: conversation.id },
+    data: { status: "ARCHIVED" },
+  });
+  return { id: conversation.id, status: "ARCHIVED" as const };
+}
+
 export async function sendChatMessage(
   userId: string,
   input: { conversationId?: string | null; message: string },
@@ -360,12 +393,86 @@ export async function sendChatMessage(
   const content = input.message.trim();
   if (!content) throw new ApiError(400, "MESSAGE_REQUIRED", "กรุณาพิมพ์ข้อความ");
 
+  const earlyCommand = await tryHandleChatCommand(userId, content, input.conversationId ?? null);
+
+  // คำสั่งระบบทำงานได้แม้ยังไม่มี TOR
+  if (earlyCommand) {
+    let conversationId = input.conversationId ?? null;
+    if (!conversationId && !earlyCommand.actions?.some((action) => action.type === "new_chat" || action.type === "delete_conversation")) {
+      const created = await prisma.conversation.create({
+        data: {
+          userId,
+          title: content.slice(0, 60),
+          status: "ACTIVE",
+          workDraft: { create: { userId, status: "COLLECTING" } },
+        },
+      });
+      conversationId = created.id;
+    }
+
+    if (conversationId && earlyCommand.actions?.some((action) => action.type === "delete_conversation")) {
+      await prisma.message.create({ data: { conversationId, role: "USER", content } });
+      await prisma.message.create({
+        data: { conversationId, role: "ASSISTANT", content: earlyCommand.reply },
+      });
+      await deleteConversation(userId, conversationId);
+      return {
+        id: conversationId,
+        title: null,
+        aiModel: null,
+        messages: [
+          { id: crypto.randomUUID(), role: "user" as const, content, latencyMs: null },
+          { id: crypto.randomUUID(), role: "assistant" as const, content: earlyCommand.reply, latencyMs: null },
+        ],
+        draft: null,
+        conversationDeleted: true,
+        actions: earlyCommand.actions,
+      };
+    }
+
+    if (earlyCommand.actions?.some((action) => action.type === "new_chat")) {
+      return {
+        id: conversationId ?? crypto.randomUUID(),
+        title: null,
+        aiModel: null,
+        messages: [
+          { id: crypto.randomUUID(), role: "user" as const, content, latencyMs: null },
+          { id: crypto.randomUUID(), role: "assistant" as const, content: earlyCommand.reply, latencyMs: null },
+        ],
+        draft: null,
+        actions: earlyCommand.actions,
+      };
+    }
+
+    if (!conversationId) {
+      const created = await prisma.conversation.create({
+        data: {
+          userId,
+          title: content.slice(0, 60),
+          status: "ACTIVE",
+          workDraft: { create: { userId, status: "COLLECTING" } },
+        },
+      });
+      conversationId = created.id;
+    }
+
+    await prisma.message.create({ data: { conversationId, role: "USER", content } });
+    await prisma.message.create({
+      data: { conversationId, role: "ASSISTANT", content: earlyCommand.reply },
+    });
+    await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    return {
+      ...(await getConversation(userId, conversationId)),
+      actions: earlyCommand.actions ?? [],
+    };
+  }
+
   const topics = await loadActiveTopics(userId);
   if (!topics.length) {
     throw new ApiError(
       409,
       "TOR_REQUIRED",
-      "ยังไม่มี TOR ที่พร้อมใช้งาน กรุณาอัปโหลด TOR ในหน้าตั้งค่าก่อน",
+      "ยังไม่มี TOR ที่พร้อมใช้งาน กรุณาอัปโหลด TOR ในหน้าตั้งค่าก่อน หรือพิมพ์ “ไปหน้า TOR” / “ช่วยเหลือ”",
     );
   }
 
@@ -465,9 +572,11 @@ export async function sendChatMessage(
         id: topic.id,
         category: topic.category,
         categoryLabel: categoryLabel[topic.category],
+        sectionLabel: topic.sectionLabel,
         title: topic.title,
         description: topic.description,
         code: topic.code,
+        hoursPerWeek: topic.hoursPerWeek === null ? null : Number(topic.hoursPerWeek),
         year: topic.torDocument.year,
       })),
       currentDraft: draftSnapshot(draft, existingMeta),

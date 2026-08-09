@@ -66,8 +66,10 @@ function compactWorkPayload(input: {
           id: item.id,
           category: item.category,
           categoryLabel: item.categoryLabel,
+          sectionLabel: item.sectionLabel ?? null,
           title: item.title,
           code: item.code ?? null,
+          hoursPerWeek: item.hoursPerWeek ?? null,
         };
       })
     : [];
@@ -154,20 +156,22 @@ async function completeJson(
   );
 }
 
-async function parseWithChatCompletions<T>(
+async function parseWithChatCompletions<TSchema, TResult = TSchema>(
   client: OpenAI,
   config: AiConfig,
-  schema: z.ZodType<T>,
+  schema: z.ZodType<TSchema>,
   name: string,
   system: string,
   user: string,
   options?: {
-    normalize?: (raw: unknown) => T;
+    normalize?: (raw: unknown) => TResult;
     preferJsonObject?: boolean;
     maxTokens?: number;
   },
-) {
-  const normalize = options?.normalize ?? ((raw: unknown) => schema.parse(raw));
+): Promise<TResult> {
+  const normalize =
+    options?.normalize
+    ?? ((raw: unknown) => schema.parse(raw) as unknown as TResult);
 
   if (!options?.preferJsonObject && !config.baseURL) {
     try {
@@ -217,7 +221,7 @@ export async function extractTor(_userId: string, text: string) {
       payload,
       {
         preferJsonObject: true,
-        maxTokens: 4_096,
+        maxTokens: 8_192,
         normalize: (raw) => {
           const normalized = normalizeTorExtraction(raw);
           if (!normalized.topics.length) {

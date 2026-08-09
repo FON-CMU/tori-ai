@@ -11,224 +11,299 @@ import {
   Paragraph,
   Table,
   TableCell,
+  TableLayoutType,
   TableRow,
   TextRun,
   WidthType,
+  VerticalAlign,
 } from "docx";
 import PDFDocument from "pdfkit";
 
 import { ApiError } from "@/lib/http/api-error";
 import { prisma } from "@/lib/prisma";
-
-const categoryLabel = {
-  ROUTINE: "งานประจำ",
-  ASSIGNED: "งานที่ได้รับมอบหมาย",
-  DEVELOPMENT: "งานเชิงพัฒนา",
-} as const;
-
-type JaExportRecord = {
-  id: string;
-  runningNumber: string;
-  workTitle: string;
-  category: keyof typeof categoryLabel;
-  description: string;
-  relatedUnit: string | null;
-  location: string | null;
-  startAt: Date;
-  endAt: Date;
-  totalHours: { toString(): string };
-  result: string;
-  confirmedAt: Date | null;
-  user: {
-    title: string | null;
-    firstName: string;
-    lastName: string;
-    employeeId: string;
-    position: string | null;
-    unit: { name: string };
-  };
-  torTopic: { title: string; code: string | null } | null;
-  torDocument: { fileName: string; year: number } | null;
-};
+import {
+  formatJaCell,
+  formatTorBlock,
+  loadJaReportDocument,
+  reportPersonName,
+  type JaReportDocument,
+  type JaReportEntry,
+  type JaReportTopicRow,
+} from "@/server/services/ja-report-service";
 
 function fontPath(file: string) {
   return path.join(process.cwd(), "assets", "fonts", file);
 }
 
-function formatDate(value: Date) {
-  return value.toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", dateStyle: "long" });
-}
+const border = {
+  top: { style: BorderStyle.SINGLE, size: 8, color: "1C1917" },
+  bottom: { style: BorderStyle.SINGLE, size: 8, color: "1C1917" },
+  left: { style: BorderStyle.SINGLE, size: 8, color: "1C1917" },
+  right: { style: BorderStyle.SINGLE, size: 8, color: "1C1917" },
+};
 
-function formatTime(value: Date) {
-  return value.toLocaleTimeString("th-TH", {
-    timeZone: "Asia/Bangkok",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
-function personName(user: JaExportRecord["user"]) {
-  return [user.title, user.firstName, user.lastName].filter(Boolean).join("");
-}
-
-async function loadJaForExport(userId: string, jaId: string): Promise<JaExportRecord> {
-  const record = await prisma.jaRecord.findFirst({
-    where: { id: jaId, userId, status: "CONFIRMED" },
-    include: {
-      user: { include: { unit: true } },
-      torTopic: { select: { title: true, code: true } },
-      torDocument: { select: { fileName: true, year: true } },
-    },
-  });
-  if (!record) throw new ApiError(404, "JA_NOT_FOUND", "ไม่พบรายการงาน");
-  return record;
-}
-
-function formRows(record: JaExportRecord) {
-  return [
-    ["เลขที่รายการ", record.runningNumber],
-    ["ปี TOR (พ.ศ.)", record.torDocument ? String(record.torDocument.year) : "-"],
-    ["เอกสาร TOR อ้างอิง", record.torDocument?.fileName ?? "-"],
-    ["ชื่อ-นามสกุล", personName(record.user)],
-    ["รหัสพนักงาน", record.user.employeeId],
-    ["ตำแหน่ง", record.user.position ?? "-"],
-    ["หน่วยงาน", record.user.unit.name],
-    ["หมวดงาน", categoryLabel[record.category]],
-    ["หัวข้อตาม TOR", record.torTopic?.title ?? "-"],
-    ["รหัสหัวข้อ TOR", record.torTopic?.code ?? "-"],
-    ["ชื่องาน / เรื่อง", record.workTitle],
-    ["รายละเอียดการปฏิบัติงาน", record.description],
-    ["ผลลัพธ์", record.result],
-    ["สถานที่", record.location ?? "-"],
-    ["หน่วยงานที่เกี่ยวข้อง", record.relatedUnit ?? "-"],
-    ["วันที่ปฏิบัติงาน", formatDate(record.startAt)],
-    ["เวลา", `${formatTime(record.startAt)} - ${formatTime(record.endAt)} น.`],
-    ["จำนวนชั่วโมง", `${record.totalHours.toString()} ชั่วโมง`],
-    ["วันที่ยืนยัน", record.confirmedAt ? formatDate(record.confirmedAt) : "-"],
-  ] as const;
-}
-
-export async function exportJaDocx(userId: string, jaId: string) {
-  const record = await loadJaForExport(userId, jaId);
-  const rows = formRows(record);
-  const fontBuffer = readFileSync(fontPath("NotoSansThai-Regular.ttf"));
-  const boldBuffer = readFileSync(fontPath("NotoSansThai-Bold.ttf"));
-  const fontName = "NotoSansThai";
-  const boldName = "NotoSansThaiBold";
-
-  const border = {
-    top: { style: BorderStyle.SINGLE, size: 8, color: "1C1917" },
-    bottom: { style: BorderStyle.SINGLE, size: 8, color: "1C1917" },
-    left: { style: BorderStyle.SINGLE, size: 8, color: "1C1917" },
-    right: { style: BorderStyle.SINGLE, size: 8, color: "1C1917" },
-  };
-
-  const table = new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    rows: rows.map(
-      ([label, value]) =>
-        new TableRow({
-          children: [
-            new TableCell({
-              borders: border,
-              width: { size: 34, type: WidthType.PERCENTAGE },
-              children: [
-                new Paragraph({
-                  children: [new TextRun({ text: label, bold: true, font: boldName, size: 28 })],
-                }),
-              ],
-            }),
-            new TableCell({
-              borders: border,
-              width: { size: 66, type: WidthType.PERCENTAGE },
-              children: [
-                new Paragraph({
-                  children: [new TextRun({ text: value, font: fontName, size: 28 })],
-                }),
-              ],
-            }),
-          ],
+function cell(text: string, width: number, opts?: { bold?: boolean; center?: boolean }) {
+  const font = opts?.bold ? "THSarabunNewBold" : "THSarabunNew";
+  const lines = (text || " ").split("\n");
+  return new TableCell({
+    borders: border,
+    width: { size: width, type: WidthType.DXA },
+    verticalAlign: VerticalAlign.TOP,
+    children: lines.map(
+      (line) =>
+        new Paragraph({
+          alignment: opts?.center ? AlignmentType.CENTER : AlignmentType.LEFT,
+          spacing: { after: 40 },
+          children: [new TextRun({ text: line || " ", bold: opts?.bold, font, size: 32 })],
         }),
     ),
   });
+}
+
+/** แบ่งครึ่งสมดุล: ซ้าย TOR+ชม. = ขวา JA+ชม. */
+const COL = {
+  tor: 3400,
+  torHours: 700,
+  ja: 3400,
+  jaHours: 700,
+} as const;
+const TABLE_WIDTH = COL.tor + COL.torHours + COL.ja + COL.jaHours;
+
+function headerRow() {
+  return new TableRow({
+    children: [
+      cell("ภาระงาน/ลักษณะงานที่ปฏิบัติ", COL.tor, { bold: true, center: true }),
+      cell("ชม./สัปดาห์", COL.torHours, { bold: true, center: true }),
+      cell("ผลการปฏิบัติงานจริง\nภาระงานที่ได้ปฏิบัติ", COL.ja, { bold: true, center: true }),
+      cell("ชม./สัปดาห์", COL.jaHours, { bold: true, center: true }),
+    ],
+  });
+}
+
+function topicRows(topic: JaReportTopicRow) {
+  const torText = formatTorBlock(topic);
+  const torHours = topic.hoursPerWeek ?? "";
+  if (!topic.jas.length) {
+    return [
+      new TableRow({
+        children: [
+          cell(torText, COL.tor),
+          cell(torHours, COL.torHours, { center: true }),
+          cell("—", COL.ja, { center: true }),
+          cell("0", COL.jaHours, { center: true }),
+        ],
+      }),
+    ];
+  }
+  return topic.jas.map(
+    (ja, index) =>
+      new TableRow({
+        children: [
+          cell(index === 0 ? torText : "", COL.tor),
+          cell(index === 0 ? torHours : "", COL.torHours, { center: true }),
+          cell(formatJaCell(ja), COL.ja),
+          cell("0", COL.jaHours, { center: true }),
+        ],
+      }),
+  );
+}
+
+function orphanRows(jas: JaReportEntry[]) {
+  return jas.map(
+    (ja) =>
+      new TableRow({
+        children: [
+          cell("(ยังไม่ผูกหัวข้อ TOR)", COL.tor),
+          cell("", COL.torHours, { center: true }),
+          cell(formatJaCell(ja), COL.ja),
+          cell("0", COL.jaHours, { center: true }),
+        ],
+      }),
+  );
+}
+
+function formTable(rows: TableRow[]) {
+  return new Table({
+    width: { size: TABLE_WIDTH, type: WidthType.DXA },
+    columnWidths: [COL.tor, COL.torHours, COL.ja, COL.jaHours],
+    layout: TableLayoutType.FIXED,
+    rows,
+  });
+}
+
+function buildDocxSections(report: JaReportDocument) {
+  const children: Array<Paragraph | Table> = [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 80 },
+      children: [
+        new TextRun({
+          text: "แบบบันทึกผลการปฏิบัติงานจริง (JA) ทั้งฉบับตาม TOR",
+          bold: true,
+          font: "THSarabunNewBold",
+          size: 40,
+        }),
+      ],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 200 },
+      children: [
+        new TextRun({
+          text: `${report.fileName} · พ.ศ. ${report.year}`,
+          font: "THSarabunNew",
+          size: 28,
+        }),
+      ],
+    }),
+    new Paragraph({
+      spacing: { after: 40 },
+      children: [
+        new TextRun({
+          text: `ชื่อ-นามสกุล: ${reportPersonName(report)}`,
+          font: "THSarabunNew",
+          size: 32,
+        }),
+      ],
+    }),
+    new Paragraph({
+      spacing: { after: 40 },
+      children: [
+        new TextRun({
+          text: `รหัสพนักงาน: ${report.user.employeeId} · ตำแหน่ง: ${report.user.position ?? "-"}`,
+          font: "THSarabunNew",
+          size: 32,
+        }),
+      ],
+    }),
+    new Paragraph({
+      spacing: { after: 200 },
+      children: [
+        new TextRun({
+          text: `หน่วยงาน: ${report.user.unitName}`,
+          font: "THSarabunNew",
+          size: 32,
+        }),
+      ],
+    }),
+  ];
+
+  for (const section of report.sections) {
+    children.push(
+      new Paragraph({
+        spacing: { before: 200, after: 80 },
+        children: [
+          new TextRun({
+            text: `${section.label}${section.title && section.title !== section.label ? ` — ${section.title}` : ""}`,
+            bold: true,
+            font: "THSarabunNewBold",
+            size: 34,
+          }),
+        ],
+      }),
+    );
+    children.push(formTable([headerRow(), ...section.topics.flatMap(topicRows)]));
+  }
+
+  if (report.orphanJas.length) {
+    children.push(
+      new Paragraph({
+        spacing: { before: 200, after: 80 },
+        children: [
+          new TextRun({
+            text: "รายการที่ยังไม่ผูกหัวข้อ TOR",
+            bold: true,
+            font: "THSarabunNewBold",
+            size: 34,
+          }),
+        ],
+      }),
+    );
+    children.push(formTable([headerRow(), ...orphanRows(report.orphanJas)]));
+  }
+
+  children.push(
+    new Paragraph({ spacing: { before: 360 }, children: [] }),
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: "ข้าพเจ้าขอรับรองว่าข้อมูลข้างต้นเป็นความจริง",
+          font: "THSarabunNew",
+          size: 32,
+        }),
+      ],
+    }),
+    new Paragraph({ spacing: { before: 480 }, children: [] }),
+    new Paragraph({
+      alignment: AlignmentType.RIGHT,
+      children: [
+        new TextRun({
+          text: "ลงชื่อ ............................................ ผู้ปฏิบัติงาน",
+          font: "THSarabunNew",
+          size: 32,
+        }),
+      ],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.RIGHT,
+      children: [
+        new TextRun({ text: `(${reportPersonName(report)})`, font: "THSarabunNew", size: 32 }),
+      ],
+    }),
+  );
+
+  return children;
+}
+
+export async function resolveTorDocumentIdForJa(userId: string, jaId: string) {
+  const record = await prisma.jaRecord.findFirst({
+    where: { id: jaId, userId, status: "CONFIRMED" },
+    select: { torDocumentId: true },
+  });
+  if (!record?.torDocumentId) {
+    throw new ApiError(404, "JA_NOT_FOUND", "ไม่พบรายการงานหรือยังไม่มีเอกสาร TOR ที่ผูกไว้");
+  }
+  return record.torDocumentId;
+}
+
+export async function exportTorJaDocx(userId: string, torDocumentId: string) {
+  const report = await loadJaReportDocument(userId, torDocumentId);
+  const fontBuffer = readFileSync(fontPath("THSarabunNew.ttf"));
+  const boldBuffer = readFileSync(fontPath("THSarabunNew-Bold.ttf"));
 
   const doc = new Document({
     fonts: [
-      { name: fontName, data: fontBuffer },
-      { name: boldName, data: boldBuffer },
+      { name: "THSarabunNew", data: fontBuffer },
+      { name: "THSarabunNewBold", data: boldBuffer },
     ],
     sections: [
       {
         properties: {
-          page: { margin: { top: 720, bottom: 720, left: 720, right: 720 } },
+          page: {
+            margin: { top: 560, bottom: 560, left: 560, right: 560 },
+          },
         },
-        children: [
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { after: 80 },
-            children: [
-              new TextRun({ text: "แบบบันทึกรายการปฏิบัติงาน (JA)", bold: true, font: boldName, size: 36 }),
-            ],
-          }),
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { after: 240 },
-            children: [
-              new TextRun({ text: "อ้างอิงตาม TOR ของผู้ปฏิบัติงาน", font: fontName, size: 28 }),
-            ],
-          }),
-          table,
-          new Paragraph({ spacing: { before: 400 }, children: [] }),
-          new Paragraph({
-            children: [
-              new TextRun({
-                text: "ข้าพเจ้าขอรับรองว่าข้อมูลข้างต้นเป็นความจริง",
-                font: fontName,
-                size: 28,
-              }),
-            ],
-          }),
-          new Paragraph({ spacing: { before: 600 }, children: [] }),
-          new Paragraph({
-            alignment: AlignmentType.RIGHT,
-            children: [
-              new TextRun({
-                text: "ลงชื่อ ............................................ ผู้ปฏิบัติงาน",
-                font: fontName,
-                size: 28,
-              }),
-            ],
-          }),
-          new Paragraph({
-            alignment: AlignmentType.RIGHT,
-            children: [
-              new TextRun({ text: `(${personName(record.user)})`, font: fontName, size: 28 }),
-            ],
-          }),
-        ],
+        children: buildDocxSections(report),
       },
     ],
   });
 
   return {
     buffer: Buffer.from(await Packer.toBuffer(doc)),
-    fileName: `${record.runningNumber}.docx`,
+    fileName: `JA-TOR-${report.year}-v${report.id.slice(0, 8)}.docx`,
     contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   };
 }
 
-export async function exportJaPdf(userId: string, jaId: string) {
-  const record = await loadJaForExport(userId, jaId);
-  const rows = formRows(record);
-
+export async function exportTorJaPdf(userId: string, torDocumentId: string) {
+  const report = await loadJaReportDocument(userId, torDocumentId);
   const doc = new PDFDocument({
     size: "A4",
-    margin: 48,
-    info: { Title: `JA ${record.runningNumber}`, Author: "TORI" },
+    margin: 36,
+    info: { Title: `JA TOR ${report.year}`, Author: "TORI" },
   });
-  doc.registerFont("Thai", fontPath("NotoSansThai-Regular.ttf"));
-  doc.registerFont("Thai-Bold", fontPath("NotoSansThai-Bold.ttf"));
+  doc.registerFont("Thai", fontPath("THSarabunNew.ttf"));
+  doc.registerFont("Thai-Bold", fontPath("THSarabunNew-Bold.ttf"));
 
   const chunks: Buffer[] = [];
   doc.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -237,49 +312,122 @@ export async function exportJaPdf(userId: string, jaId: string) {
     doc.on("error", reject);
   });
 
-  doc.font("Thai-Bold").fontSize(16).text("แบบบันทึกรายการปฏิบัติงาน (JA)", { align: "center" });
-  doc.moveDown(0.3);
-  doc.font("Thai").fontSize(11).text("อ้างอิงตาม TOR ของผู้ปฏิบัติงาน", { align: "center" });
-  doc.moveDown(1);
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const cols = [
+    { key: "tor", width: pageWidth * 0.4 },
+    { key: "torH", width: pageWidth * 0.1 },
+    { key: "ja", width: pageWidth * 0.4 },
+    { key: "jaH", width: pageWidth * 0.1 },
+  ] as const;
 
-  const labelWidth = 160;
-  const valueWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right - labelWidth;
-  const startX = doc.page.margins.left;
-
-  for (const [label, value] of rows) {
-    const labelHeight = doc.heightOfString(label, { width: labelWidth - 12 });
-    const valueHeight = doc.heightOfString(value, { width: valueWidth - 12 });
-    const rowHeight = Math.max(labelHeight, valueHeight, 18) + 14;
-
-    if (doc.y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+  function ensureSpace(height: number) {
+    if (doc.y + height > doc.page.height - doc.page.margins.bottom) {
       doc.addPage();
     }
+  }
 
+  function drawRow(values: [string, string, string, string], boldHeader = false) {
+    const heights = values.map((value, index) =>
+      doc.heightOfString(value || " ", {
+        width: cols[index].width - 10,
+        lineGap: 1.5,
+      }),
+    );
+    const rowHeight = Math.max(...heights, 18) + 12;
+    ensureSpace(rowHeight);
     const top = doc.y;
-    doc.rect(startX, top, labelWidth + valueWidth, rowHeight).stroke("#1c1917");
-    doc.moveTo(startX + labelWidth, top).lineTo(startX + labelWidth, top + rowHeight).stroke("#1c1917");
-
-    doc.font("Thai-Bold").fontSize(10).text(label, startX + 6, top + 6, {
-      width: labelWidth - 12,
-      lineGap: 2,
-    });
-    doc.font("Thai").fontSize(10).text(value, startX + labelWidth + 6, top + 6, {
-      width: valueWidth - 12,
-      lineGap: 2,
-    });
+    let x = doc.page.margins.left;
+    doc.rect(x, top, pageWidth, rowHeight).stroke("#1c1917");
+    for (let i = 0; i < cols.length; i += 1) {
+      const col = cols[i];
+      if (i > 0) doc.moveTo(x, top).lineTo(x, top + rowHeight).stroke("#1c1917");
+      doc
+        .font(boldHeader ? "Thai-Bold" : "Thai")
+        .fontSize(boldHeader ? 12 : 11)
+        .text(values[i] || " ", x + 5, top + 5, {
+          width: col.width - 10,
+          lineGap: 1.5,
+          align: i === 1 || i === 3 ? "center" : "left",
+        });
+      x += col.width;
+    }
     doc.y = top + rowHeight;
   }
 
+  doc.font("Thai-Bold").fontSize(18).text("แบบบันทึกผลการปฏิบัติงานจริง (JA) ทั้งฉบับตาม TOR", {
+    align: "center",
+  });
+  doc.moveDown(0.3);
+  doc.font("Thai").fontSize(14).text(`${report.fileName} · พ.ศ. ${report.year}`, { align: "center" });
+  doc.moveDown(0.6);
+  doc.fontSize(14).text(`ชื่อ-นามสกุล: ${reportPersonName(report)}`);
+  doc.text(`รหัสพนักงาน: ${report.user.employeeId} · ตำแหน่ง: ${report.user.position ?? "-"}`);
+  doc.text(`หน่วยงาน: ${report.user.unitName}`);
+  doc.moveDown(0.6);
+
+  for (const section of report.sections) {
+    ensureSpace(40);
+    doc
+      .font("Thai-Bold")
+      .fontSize(15)
+      .text(
+        `${section.label}${section.title && section.title !== section.label ? ` — ${section.title}` : ""}`,
+      );
+    doc.moveDown(0.3);
+    drawRow(
+      ["ภาระงาน/ลักษณะงานที่ปฏิบัติ", "ชม./สัปดาห์", "ผลการปฏิบัติงานจริง", "ชม./สัปดาห์"],
+      true,
+    );
+    for (const topic of section.topics) {
+      const torText = formatTorBlock(topic);
+      const torHours = topic.hoursPerWeek ?? "";
+      if (!topic.jas.length) {
+        drawRow([torText, torHours, "—", "0"]);
+        continue;
+      }
+      topic.jas.forEach((ja, index) => {
+        drawRow([
+          index === 0 ? torText : "",
+          index === 0 ? torHours : "",
+          formatJaCell(ja),
+          "0",
+        ]);
+      });
+    }
+    doc.moveDown(0.5);
+  }
+
+  if (report.orphanJas.length) {
+    doc.font("Thai-Bold").fontSize(15).text("รายการที่ยังไม่ผูกหัวข้อ TOR");
+    doc.moveDown(0.3);
+    drawRow(
+      ["ภาระงาน/ลักษณะงานที่ปฏิบัติ", "ชม./สัปดาห์", "ผลการปฏิบัติงานจริง", "ชม./สัปดาห์"],
+      true,
+    );
+    for (const ja of report.orphanJas) {
+      drawRow(["(ยังไม่ผูกหัวข้อ TOR)", "", formatJaCell(ja), "0"]);
+    }
+  }
+
+  doc.moveDown(1.5);
+  doc.font("Thai").fontSize(14).text("ข้าพเจ้าขอรับรองว่าข้อมูลข้างต้นเป็นความจริง");
   doc.moveDown(2);
-  doc.font("Thai").fontSize(11).text("ข้าพเจ้าขอรับรองว่าข้อมูลข้างต้นเป็นความจริง");
-  doc.moveDown(2.5);
-  doc.text("ลงชื่อ ............................................ ผู้ปฏิบัติงาน", { align: "right" });
-  doc.text(`(${personName(record.user)})`, { align: "right" });
+  doc.fontSize(14).text("ลงชื่อ ............................................ ผู้ปฏิบัติงาน", { align: "right" });
+  doc.text(`(${reportPersonName(report)})`, { align: "right" });
   doc.end();
 
   return {
     buffer: await done,
-    fileName: `${record.runningNumber}.pdf`,
+    fileName: `JA-TOR-${report.year}-v${report.id.slice(0, 8)}.pdf`,
     contentType: "application/pdf",
   };
+}
+
+/** เดิมส่งออกทีละ JA — เปลี่ยนให้ส่งออกทั้งฉบับของเอกสาร TOR ที่ผูกไว้ */
+export async function exportJaDocx(userId: string, jaId: string) {
+  return exportTorJaDocx(userId, await resolveTorDocumentIdForJa(userId, jaId));
+}
+
+export async function exportJaPdf(userId: string, jaId: string) {
+  return exportTorJaPdf(userId, await resolveTorDocumentIdForJa(userId, jaId));
 }

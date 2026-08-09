@@ -2,5 +2,5 @@ import { requirePageSession } from "@/lib/auth/session";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await requirePageSession();
-  return <div className="min-h-screen bg-[#f7f6f1] text-stone-900">{children}</div>;
+  return <div className="min-h-screen bg-[var(--apple-bg,#f5f5f7)] text-[var(--apple-ink,#1d1d1f)]">{children}</div>;
 }

@@ -185,35 +185,265 @@ export function normalizeWorkExtraction(raw: unknown): WorkExtraction {
   };
 }
 
+export const torTopicKindSchema = z.enum(["SECTION", "TOPIC", "SUBITEM"]);
+
+/** Schema ส่งให้โมเดล — คงโครงตามฟอร์ม TOR (หมวด → หัวข้อ → รายการย่อย) */
 export const torExtractionSchema = z.object({
-  topics: z.array(
+  sections: z.array(
     z.object({
       category: categorySchema,
-      code: z.string().nullable(),
+      label: z.string().nullable(),
       title: z.string().min(1),
-      description: z.string().nullable(),
+      hoursPerWeek: z.number().nullable(),
       sourcePage: z.number().int().positive().nullable(),
-      confidence: z.number().min(0).max(1),
+      topics: z.array(
+        z.object({
+          code: z.string().nullable(),
+          title: z.string().min(1),
+          description: z.string().nullable(),
+          hoursPerWeek: z.number().nullable(),
+          sourcePage: z.number().int().positive().nullable(),
+          confidence: z.number().min(0).max(1),
+          items: z.array(
+            z.object({
+              code: z.string().nullable(),
+              title: z.string().min(1),
+              description: z.string().nullable(),
+              hoursPerWeek: z.number().nullable(),
+            }),
+          ),
+        }),
+      ),
     }),
   ),
   warnings: z.array(z.string()),
 });
 
-export type TorExtraction = z.infer<typeof torExtractionSchema>;
+export type TorExtractionTopic = {
+  category: z.infer<typeof categorySchema>;
+  kind: z.infer<typeof torTopicKindSchema>;
+  sectionLabel: string | null;
+  code: string | null;
+  title: string;
+  description: string | null;
+  hoursPerWeek: number | null;
+  sourcePage: number | null;
+  confidence: number;
+  matchable: boolean;
+  selfKey: string;
+  parentKey: string | null;
+  sortOrder: number;
+};
 
-/** แปลง JSON จากเกตเวย์ให้เข้า schema TOR ได้แม้ฟิลด์ไม่เป๊ะ */
+export type TorExtraction = {
+  topics: TorExtractionTopic[];
+  warnings: string[];
+};
+
+function asHoursPerWeek(value: unknown) {
+  const number = asNullableNumber(value);
+  if (number === null || number < 0) return null;
+  return number;
+}
+
+function pushUniqueTopic(
+  unique: Map<string, TorExtractionTopic>,
+  topic: TorExtractionTopic,
+) {
+  const key = `${topic.kind}::${topic.category}::${topic.code ?? ""}::${topic.title.toLowerCase()}::${topic.parentKey ?? ""}`;
+  if (!unique.has(key)) unique.set(key, topic);
+}
+
+function flattenLegacyTopicRow(
+  row: Record<string, unknown>,
+  fallbackCategory: z.infer<typeof categorySchema> | null,
+  sortOrder: number,
+): TorExtractionTopic | null {
+  const title =
+    asNullableString(row.title)
+    ?? asNullableString(row.name)
+    ?? asNullableString(row.topic)
+    ?? asNullableString(row.หัวข้อ)
+    ?? asNullableString(row.ชื่องาน);
+  if (!title) return null;
+
+  const category =
+    asNullableCategory(row.category)
+    ?? asNullableCategory(row.หมวด)
+    ?? asNullableCategory(row.type)
+    ?? asNullableCategory(row.group)
+    ?? fallbackCategory
+    ?? inferCategoryFromText(title, asNullableString(row.description))
+    ?? "ROUTINE";
+
+  const kindRaw = asNullableString(row.kind)?.toUpperCase();
+  const kind =
+    kindRaw === "SECTION" || kindRaw === "SUBITEM" || kindRaw === "TOPIC"
+      ? kindRaw
+      : "TOPIC";
+
+  const code = asNullableString(row.code ?? row.รหัส);
+  const sectionLabel = asNullableString(row.sectionLabel ?? row.label ?? row.หมวดหัวข้อ);
+  const selfKey =
+    asNullableString(row.selfKey)
+    ?? `${category}::${kind}::${code ?? title}`;
+  const parentKey = asNullableString(row.parentKey);
+  const sourcePage = asNullableNumber(row.sourcePage ?? row.page ?? row.pageNumber ?? row.หน้า);
+
+  return {
+    category,
+    kind,
+    sectionLabel,
+    code,
+    title,
+    description: asNullableString(row.description ?? row.detail ?? row.รายละเอียด),
+    hoursPerWeek: asHoursPerWeek(row.hoursPerWeek ?? row.hours ?? row.ชมต่อสัปดาห์ ?? row["ชม./สัปดาห์"]),
+    sourcePage: sourcePage && sourcePage > 0 ? Math.round(sourcePage) : null,
+    confidence: asConfidence(row.confidence ?? row.คะแนน),
+    matchable: typeof row.matchable === "boolean" ? row.matchable : kind === "TOPIC",
+    selfKey,
+    parentKey,
+    sortOrder: asNullableNumber(row.sortOrder) ?? sortOrder,
+  };
+}
+
+/** แปลง JSON จากเกตเวย์ให้เข้า schema TOR ได้แม้ฟิลด์ไม่เป๊ะ และคงลำดับตามฟอร์ม */
 export function normalizeTorExtraction(raw: unknown): TorExtraction {
   const record =
     raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
       : {};
 
+  const unique = new Map<string, TorExtractionTopic>();
+  let order = 0;
+
+  const sectionsRaw = Array.isArray(record.sections) ? record.sections : [];
+  for (const sectionItem of sectionsRaw) {
+    if (!sectionItem || typeof sectionItem !== "object" || Array.isArray(sectionItem)) continue;
+    const section = sectionItem as Record<string, unknown>;
+    const category =
+      asNullableCategory(section.category)
+      ?? asNullableCategory(section.หมวด)
+      ?? inferCategoryFromText(
+        asNullableString(section.label),
+        asNullableString(section.title),
+      )
+      ?? "ROUTINE";
+    const sectionLabel =
+      asNullableString(section.label)
+      ?? asNullableString(section.sectionLabel)
+      ?? asNullableString(section.heading);
+    const sectionTitle =
+      asNullableString(section.title)
+      ?? sectionLabel
+      ?? categoryLabelFallback(category);
+    const sectionKey = `${category}::SECTION::${sectionTitle}`;
+    const sectionPage = asNullableNumber(section.sourcePage ?? section.page);
+
+    pushUniqueTopic(unique, {
+      category,
+      kind: "SECTION",
+      sectionLabel,
+      code: asNullableString(section.code),
+      title: sectionTitle,
+      description: asNullableString(section.description),
+      hoursPerWeek: asHoursPerWeek(section.hoursPerWeek),
+      sourcePage: sectionPage && sectionPage > 0 ? Math.round(sectionPage) : null,
+      confidence: asConfidence(section.confidence ?? 0.8),
+      matchable: false,
+      selfKey: sectionKey,
+      parentKey: null,
+      sortOrder: order++,
+    });
+
+    const topicsInSection = Array.isArray(section.topics) ? section.topics : [];
+    for (const topicItem of topicsInSection) {
+      if (!topicItem || typeof topicItem !== "object" || Array.isArray(topicItem)) continue;
+      const topic = topicItem as Record<string, unknown>;
+      const topicTitle =
+        asNullableString(topic.title)
+        ?? asNullableString(topic.name)
+        ?? asNullableString(topic.หัวข้อ);
+      if (!topicTitle) continue;
+      const topicCode = asNullableString(topic.code ?? topic.รหัส);
+      const topicKey = `${category}::TOPIC::${topicCode ?? topicTitle}`;
+      const topicPage = asNullableNumber(topic.sourcePage ?? topic.page);
+
+      pushUniqueTopic(unique, {
+        category,
+        kind: "TOPIC",
+        sectionLabel,
+        code: topicCode,
+        title: topicTitle,
+        description: asNullableString(topic.description ?? topic.detail ?? topic.รายละเอียด),
+        hoursPerWeek: asHoursPerWeek(topic.hoursPerWeek ?? topic.hours),
+        sourcePage: topicPage && topicPage > 0 ? Math.round(topicPage) : null,
+        confidence: asConfidence(topic.confidence ?? 0.8),
+        matchable: true,
+        selfKey: topicKey,
+        parentKey: sectionKey,
+        sortOrder: order++,
+      });
+
+      const items = Array.isArray(topic.items)
+        ? topic.items
+        : Array.isArray(topic.subItems)
+          ? topic.subItems
+          : Array.isArray(topic.children)
+            ? topic.children
+            : [];
+      for (const itemRaw of items) {
+        if (typeof itemRaw === "string" && itemRaw.trim()) {
+          pushUniqueTopic(unique, {
+            category,
+            kind: "SUBITEM",
+            sectionLabel,
+            code: null,
+            title: itemRaw.trim(),
+            description: null,
+            hoursPerWeek: null,
+            sourcePage: null,
+            confidence: 0.7,
+            matchable: false,
+            selfKey: `${category}::SUBITEM::${itemRaw.trim()}`,
+            parentKey: topicKey,
+            sortOrder: order++,
+          });
+          continue;
+        }
+        if (!itemRaw || typeof itemRaw !== "object" || Array.isArray(itemRaw)) continue;
+        const item = itemRaw as Record<string, unknown>;
+        const itemTitle =
+          asNullableString(item.title)
+          ?? asNullableString(item.name)
+          ?? asNullableString(item.หัวข้อ);
+        if (!itemTitle) continue;
+        const itemCode = asNullableString(item.code ?? item.รหัส);
+        pushUniqueTopic(unique, {
+          category,
+          kind: "SUBITEM",
+          sectionLabel,
+          code: itemCode,
+          title: itemTitle,
+          description: asNullableString(item.description ?? item.detail ?? item.รายละเอียด),
+          hoursPerWeek: asHoursPerWeek(item.hoursPerWeek ?? item.hours),
+          sourcePage: null,
+          confidence: asConfidence(item.confidence ?? 0.75),
+          matchable: false,
+          selfKey: `${category}::SUBITEM::${itemCode ?? itemTitle}`,
+          parentKey: topicKey,
+          sortOrder: order++,
+        });
+      }
+    }
+  }
+
+  // รูปแบบเก่า: topics แบน หรือจัดกลุ่มตามหมวด
   let topicsRaw: unknown[] = [];
   if (Array.isArray(record.topics)) topicsRaw = record.topics;
   else if (Array.isArray(record.items)) topicsRaw = record.items;
   else if (Array.isArray(record.data)) topicsRaw = record.data;
-  else {
-    // รูปแบบจัดกลุ่มตามหมวด เช่น { ROUTINE: [...], "งานประจำ": [...] }
+  else if (!sectionsRaw.length) {
     for (const [key, value] of Object.entries(record)) {
       if (!Array.isArray(value)) continue;
       const category = asNullableCategory(key);
@@ -228,57 +458,39 @@ export function normalizeTorExtraction(raw: unknown): TorExtraction {
     }
   }
 
-  const topics = topicsRaw
-    .map((item) => {
-      if (typeof item === "string" && item.trim()) {
-        return {
-          category: "ROUTINE" as const,
-          code: null,
-          title: item.trim(),
-          description: null,
-          sourcePage: null,
-          confidence: 0.5,
-        };
-      }
-      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-      const row = item as Record<string, unknown>;
-      const title =
-        asNullableString(row.title)
-        ?? asNullableString(row.name)
-        ?? asNullableString(row.topic)
-        ?? asNullableString(row.หัวข้อ)
-        ?? asNullableString(row.ชื่องาน);
-      if (!title) return null;
-
-      const category =
-        asNullableCategory(row.category)
-        ?? asNullableCategory(row.หมวด)
-        ?? asNullableCategory(row.type)
-        ?? asNullableCategory(row.group)
-        ?? inferCategoryFromText(title, asNullableString(row.description))
-        ?? "ROUTINE";
-
-      const sourcePage = asNullableNumber(row.sourcePage ?? row.page ?? row.pageNumber ?? row.หน้า);
-      return {
-        category,
-        code: asNullableString(row.code ?? row.รหัส),
-        title,
-        description: asNullableString(row.description ?? row.detail ?? row.รายละเอียด),
-        sourcePage: sourcePage && sourcePage > 0 ? Math.round(sourcePage) : null,
-        confidence: asConfidence(row.confidence ?? row.คะแนน),
-      };
-    })
-    .filter((topic): topic is NonNullable<typeof topic> => Boolean(topic));
-
-  // ตัดหัวข้อซ้ำชื่อในหมวดเดียวกัน
-  const unique = new Map<string, (typeof topics)[number]>();
-  for (const topic of topics) {
-    const key = `${topic.category}::${topic.title.toLowerCase()}`;
-    if (!unique.has(key)) unique.set(key, topic);
+  for (const item of topicsRaw) {
+    if (typeof item === "string" && item.trim()) {
+      pushUniqueTopic(unique, {
+        category: "ROUTINE",
+        kind: "TOPIC",
+        sectionLabel: null,
+        code: null,
+        title: item.trim(),
+        description: null,
+        hoursPerWeek: null,
+        sourcePage: null,
+        confidence: 0.5,
+        matchable: true,
+        selfKey: `ROUTINE::TOPIC::${item.trim()}`,
+        parentKey: null,
+        sortOrder: order++,
+      });
+      continue;
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const flattened = flattenLegacyTopicRow(item as Record<string, unknown>, null, order++);
+    if (flattened) pushUniqueTopic(unique, flattened);
   }
 
+  const topics = [...unique.values()].sort((a, b) => a.sortOrder - b.sortOrder);
   return {
-    topics: [...unique.values()],
+    topics,
     warnings: asStringArray(record.warnings ?? record.notes ?? record.คำเตือน),
   };
+}
+
+function categoryLabelFallback(category: z.infer<typeof categorySchema>) {
+  if (category === "ROUTINE") return "1. งานประจำ";
+  if (category === "ASSIGNED") return "2. งานที่ได้รับมอบหมาย";
+  return "3. ภาระงานเชิงพัฒนา";
 }

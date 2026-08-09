@@ -10,6 +10,7 @@ import {
   parseTimeRange,
 } from "@/lib/date";
 import { normalizeTorExtraction, normalizeWorkExtraction } from "@/lib/validation/ai";
+import { isDataQueryIntent } from "@/lib/chat/data-query-intent";
 import { normalizeAiModelId, normalizeOpenAiBaseUrl, matchAllowedModel, resolveChatModelCatalog } from "@/lib/validation/ai-settings";
 import { buildMissingFieldQuestion, deriveWorkTitle, findMissingFields, parseCategoryAnswer } from "@/lib/validation/work";
 import { canReadJa } from "@/server/policies/ownership";
@@ -182,6 +183,8 @@ describe("TORI core business rules", () => {
     });
     expect(parsed.topics).toHaveLength(2);
     expect(parsed.topics[0]?.category).toBe("ROUTINE");
+    expect(parsed.topics[0]?.kind).toBe("TOPIC");
+    expect(parsed.topics[0]?.matchable).toBe(true);
     expect(parsed.topics[0]?.sourcePage).toBe(2);
     expect(parsed.topics[0]?.confidence).toBe(0.9);
     expect(parsed.topics[1]?.category).toBe("ASSIGNED");
@@ -194,5 +197,53 @@ describe("TORI core business rules", () => {
     });
     expect(parsed.topics).toHaveLength(2);
     expect(parsed.topics.map((topic) => topic.category).sort()).toEqual(["DEVELOPMENT", "ROUTINE"]);
+  });
+  it("normalizes TOR sections into form-preserving tree", () => {
+    const parsed = normalizeTorExtraction({
+      sections: [
+        {
+          category: "DEVELOPMENT",
+          label: "3. ภาระงานเชิงพัฒนา",
+          title: "งานเชิงพัฒนา",
+          hoursPerWeek: null,
+          sourcePage: 1,
+          topics: [
+            {
+              code: "1",
+              title: "การพัฒนาตนเอง เช่น การเข้าร่วมประชุม/อบรม",
+              description: null,
+              hoursPerWeek: 7,
+              sourcePage: 1,
+              confidence: 0.9,
+              items: [
+                {
+                  code: "1.1",
+                  title: "สนับสนุน LINE OA",
+                  description: "Chatbot และ Service Menu",
+                  hoursPerWeek: null,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      warnings: [],
+    });
+    expect(parsed.topics.map((topic) => topic.kind)).toEqual(["SECTION", "TOPIC", "SUBITEM"]);
+    const topic = parsed.topics.find((row) => row.kind === "TOPIC");
+    expect(topic?.hoursPerWeek).toBe(7);
+    expect(topic?.matchable).toBe(true);
+    expect(topic?.sectionLabel).toBe("3. ภาระงานเชิงพัฒนา");
+    const item = parsed.topics.find((row) => row.kind === "SUBITEM");
+    expect(item?.code).toBe("1.1");
+    expect(item?.matchable).toBe(false);
+    expect(item?.parentKey).toBe(topic?.selfKey);
+  });
+  it("detects natural-language JA count questions as data queries", () => {
+    expect(isDataQueryIntent("ตอนนี้มีหัวข้อรายงาน ja กี่เรื่องแล้ว")).toBe(true);
+    expect(isDataQueryIntent("มี JA กี่รายการ")).toBe(true);
+    expect(isDataQueryIntent("สรุปรายงานตอนนี้")).toBe(true);
+    expect(isDataQueryIntent("วันนี้ฉันเข้าร่วมอบรม AI ที่คณะพยาบาล")).toBe(false);
+    expect(isDataQueryIntent("ช่วยบันทึกงานให้หน่อย ฉันเพิ่งทำเสร็จ")).toBe(false);
   });
 });
