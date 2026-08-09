@@ -122,6 +122,16 @@ function orphanRows(jas: JaReportEntry[]) {
   );
 }
 
+/**
+ * label ของหมวดมักมีเลขนำหน้าชื่อเดียวกับ title ("2. งานที่ได้รับมอบหมาย" กับ
+ * "งานที่ได้รับมอบหมาย") ถ้าเทียบตรง ๆ จะไม่เท่ากันแล้วพิมพ์ซ้ำสองรอบ
+ */
+function sectionHeading(section: { label: string; title: string | null }) {
+  const stripped = section.label.replace(/^[\d.\s]+/, "").trim();
+  if (!section.title || section.title.trim() === stripped) return section.label;
+  return `${section.label} — ${section.title}`;
+}
+
 function formTable(rows: TableRow[]) {
   return new Table({
     width: { size: TABLE_WIDTH, type: WidthType.DXA },
@@ -194,7 +204,7 @@ function buildDocxSections(report: JaReportDocument) {
         spacing: { before: 200, after: 80 },
         children: [
           new TextRun({
-            text: `${section.label}${section.title && section.title !== section.label ? ` — ${section.title}` : ""}`,
+            text: sectionHeading(section),
             bold: true,
             font: "THSarabunNewBold",
             size: 34,
@@ -352,6 +362,10 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
       x += col.width;
     }
     doc.y = top + rowHeight;
+    // การวาดเซลล์สุดท้ายทิ้ง doc.x ไว้ที่ขอบขวาของคอลัมน์ที่ 4 ถ้าไม่ดึงกลับมาที่
+    // ขอบซ้าย ข้อความถัดจากตาราง (หัวข้อหมวด บรรทัดรับรอง ช่องลงชื่อ) จะถูกบีบ
+    // ให้ตัดคำในความกว้างที่เหลือราว 50pt กลายเป็นแถบแนวตั้งชิดขอบขวา
+    doc.x = doc.page.margins.left;
   }
 
   doc.font("Thai-Bold").fontSize(18).text("แบบบันทึกผลการปฏิบัติงานจริง (JA) ทั้งฉบับตาม TOR", {
@@ -366,13 +380,12 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
   doc.moveDown(0.6);
 
   for (const section of report.sections) {
-    ensureSpace(40);
+    // เผื่อที่ให้หัวข้อหมวด + แถวหัวตาราง ไม่งั้นหัวข้อจะค้างท้ายหน้าโดยที่ตารางไปอยู่หน้าถัดไป
+    ensureSpace(90);
     doc
       .font("Thai-Bold")
       .fontSize(15)
-      .text(
-        `${section.label}${section.title && section.title !== section.label ? ` — ${section.title}` : ""}`,
-      );
+      .text(sectionHeading(section));
     doc.moveDown(0.3);
     drawRow(
       ["ภาระงาน/ลักษณะงานที่ปฏิบัติ", "ชม./สัปดาห์", "ผลการปฏิบัติงานจริง", "ชม./สัปดาห์"],
