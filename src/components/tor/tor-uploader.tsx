@@ -14,7 +14,7 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [year, setYear] = useState(() => currentBuddhistYear());
   const [stage, setStage] = useState<"idle" | "uploading" | "processing">("idle");
-  const [message, setMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: "error" | "warning" | "success"; text: string } | null>(null);
   const uploading = stage !== "idle";
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
@@ -46,14 +46,23 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
       });
 
       const processed = await fetch(`/api/tor/${result.data.id}/process`, { method: "POST" });
-      const processedResult = await processed.json() as { error?: { message?: string } };
+      const processedResult = await processed.json() as {
+        data?: { status?: string; topicCount?: number };
+        error?: { message?: string };
+      };
       if (!processed.ok) {
         // The file is saved either way — the card below offers a retry button.
         throw new Error(
           `${processedResult.error?.message ?? "อ่านเอกสารไม่สำเร็จ"} (ไฟล์ถูกบันทึกแล้ว กดปุ่มประมวลผลในการ์ดด้านล่างเพื่อลองใหม่)`,
         );
       }
-      setMessage({ type: "success", text: `TOR ปี พ.ศ. ${year} พร้อมใช้งานในแชทแล้ว` });
+
+      // ingestTor answers 200 even when the AI step failed, so the document can
+      // come back readable but with no topics — it is not usable in chat yet.
+      const ready = processedResult.data?.status === "ACTIVE" && (processedResult.data.topicCount ?? 0) > 0;
+      setMessage(ready
+        ? { type: "success", text: `TOR ปี พ.ศ. ${year} พร้อมใช้งานในแชทแล้ว` }
+        : { type: "warning", text: "อ่านเอกสารสำเร็จ แต่ยังแยกหัวข้อไม่ได้ ดูรายละเอียดและลองใหม่ได้ในการ์ดด้านล่าง" });
       router.refresh();
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "อัปโหลดไม่สำเร็จ" });
@@ -103,7 +112,10 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
         {stage === "uploading" ? "กำลังอัปโหลด…" : stage === "processing" ? "กำลังวิเคราะห์ด้วย AI…" : "เลือกไฟล์ TOR"}
       </button>
       {message ? (
-        <p role="status" className={`mt-3 text-sm ${message.type === "success" ? "text-emerald-700" : "text-red-700"}`}>
+        <p
+          role="status"
+          className={`mt-3 text-sm ${message.type === "success" ? "text-emerald-700" : message.type === "warning" ? "text-amber-700" : "text-red-700"}`}
+        >
           {message.text}
         </p>
       ) : null}
