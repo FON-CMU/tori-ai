@@ -45,8 +45,6 @@ export type JaReportEntry = {
   startAtLabel: string;
   endAtLabel: string;
   totalHours: string;
-  /** ตามเงื่อนไขผลิตภัณฑ์: ฝั่ง JA ในฟอร์มเป็น 0 เสมอ */
-  hoursPerWeek: "0";
 };
 
 export type JaReportTopicRow = {
@@ -122,7 +120,6 @@ function toJaEntry(row: {
     startAtLabel: formatDateTime(row.startAt),
     endAtLabel: formatDateTime(row.endAt),
     totalHours: row.totalHours.toString(),
-    hoursPerWeek: "0",
   };
 }
 

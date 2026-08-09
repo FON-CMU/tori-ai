@@ -21,6 +21,7 @@ import PDFDocument from "pdfkit";
 
 import { ApiError } from "@/lib/http/api-error";
 import { prisma } from "@/lib/prisma";
+import { sumJaHours } from "@/lib/report/ja-hours";
 import {
   formatJaCell,
   formatTorBlock,
@@ -90,7 +91,7 @@ function topicRows(topic: JaReportTopicRow) {
           cell(torText, COL.tor),
           cell(torHours, COL.torHours, { center: true }),
           cell("—", COL.ja, { center: true }),
-          cell("0", COL.jaHours, { center: true }),
+          cell(sumJaHours(topic.jas), COL.jaHours, { center: true }),
         ],
       }),
     ];
@@ -102,7 +103,8 @@ function topicRows(topic: JaReportTopicRow) {
           cell(index === 0 ? torText : "", COL.tor),
           cell(index === 0 ? torHours : "", COL.torHours, { center: true }),
           cell(formatJaCell(ja), COL.ja),
-          cell("0", COL.jaHours, { center: true }),
+          // ชั่วโมงรวมของหัวข้อลงแถวแรกแถวเดียว เหมือนฝั่ง TOR ที่ไม่พิมพ์ซ้ำทุกแถว
+          cell(index === 0 ? sumJaHours(topic.jas) : "", COL.jaHours, { center: true }),
         ],
       }),
   );
@@ -116,7 +118,7 @@ function orphanRows(jas: JaReportEntry[]) {
           cell("(ยังไม่ผูกหัวข้อ TOR)", COL.tor),
           cell("", COL.torHours, { center: true }),
           cell(formatJaCell(ja), COL.ja),
-          cell("0", COL.jaHours, { center: true }),
+          cell(sumJaHours([ja]), COL.jaHours, { center: true }),
         ],
       }),
   );
@@ -395,7 +397,7 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
       const torText = formatTorBlock(topic);
       const torHours = topic.hoursPerWeek ?? "";
       if (!topic.jas.length) {
-        drawRow([torText, torHours, "—", "0"]);
+        drawRow([torText, torHours, "—", sumJaHours(topic.jas)]);
         continue;
       }
       topic.jas.forEach((ja, index) => {
@@ -403,7 +405,7 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
           index === 0 ? torText : "",
           index === 0 ? torHours : "",
           formatJaCell(ja),
-          "0",
+          index === 0 ? sumJaHours(topic.jas) : "",
         ]);
       });
     }
@@ -418,7 +420,7 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
       true,
     );
     for (const ja of report.orphanJas) {
-      drawRow(["(ยังไม่ผูกหัวข้อ TOR)", "", formatJaCell(ja), "0"]);
+      drawRow(["(ยังไม่ผูกหัวข้อ TOR)", "", formatJaCell(ja), sumJaHours([ja])]);
     }
   }
 

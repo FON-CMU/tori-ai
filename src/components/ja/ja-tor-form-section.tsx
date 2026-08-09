@@ -9,7 +9,6 @@ type JaCard = {
   startAtLabel: string;
   endAtLabel: string;
   totalHours: string;
-  hoursPerWeek: string;
 };
 
 type TopicRow = {
@@ -18,6 +17,8 @@ type TopicRow = {
   title: string;
   description: string | null;
   hoursPerWeek: string | null;
+  /** ผลรวมชั่วโมงจริงของ JA ในหัวข้อนี้ — คอลัมน์ขวาสุดของฟอร์ม */
+  jaHours: string;
   children: Array<{
     id: string;
     code: string | null;
@@ -43,9 +44,6 @@ function JaBlock({ ja }: { ja: JaCard }) {
           <div><span className="text-stone-500">ชั่วโมง: </span>{ja.totalHours}</div>
         </dl>
         <div className="flex flex-col items-end gap-2">
-          <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600">
-            ชม./สัปดาห์ {ja.hoursPerWeek}
-          </span>
           <JaDeleteButton id={ja.id} workTitle={ja.workTitle} />
         </div>
       </div>
@@ -117,8 +115,8 @@ export function JaTorFormSection({
                 )}
               </div>
               <div className="text-sm text-stone-700 md:border-l md:border-stone-100 md:px-2 md:pt-0.5 md:text-center">
-                <span className="md:hidden text-xs text-stone-500">ชม./สัปดาห์ JA: </span>
-                0
+                <span className="md:hidden text-xs text-stone-500">ชั่วโมงจริง JA: </span>
+                {topic.jaHours}
               </div>
             </div>
           ))

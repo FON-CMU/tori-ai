@@ -1,6 +1,7 @@
 import { JaTorFormSection } from "@/components/ja/ja-tor-form-section";
 import { TorJaExportButtons } from "@/components/ja/tor-ja-export-buttons";
 import { requirePageSession } from "@/lib/auth/session";
+import { sumJaHours } from "@/lib/report/ja-hours";
 import {
   listJaReportDocuments,
   loadJaReportDocument,
@@ -17,7 +18,7 @@ export default async function SettingsJaPage() {
       <h1 className="mt-2 text-3xl font-semibold">รายงานผลการปฏิบัติงานจริง</h1>
       <p className="mt-2 max-w-3xl text-stone-600">
         แสดงทั้งฉบับตามฟอร์ม TOR — ซ้ายคือภาระงานตาม TOR ขวาคือผลการปฏิบัติงานจริง (JA)
-        โดยชม./สัปดาห์ฝั่ง JA เป็น 0 ตามแบบ และส่งออกได้ทั้งฉบับเป็น Word/PDF
+        ช่องขวาสุดคือผลรวมชั่วโมงจริงของ JA ในหัวข้อนั้น และส่งออกได้ทั้งฉบับเป็น Word/PDF
       </p>
 
       <div className="mt-6 space-y-8">
@@ -52,6 +53,7 @@ export default async function SettingsJaPage() {
                       title: topic.title,
                       description: topic.description,
                       hoursPerWeek: topic.hoursPerWeek,
+                      jaHours: sumJaHours(topic.jas),
                       children: topic.children.map((child) => ({
                         id: child.id,
                         code: child.code,
@@ -74,6 +76,7 @@ export default async function SettingsJaPage() {
                         title: "ยังไม่ระบุหัวข้อตาม TOR",
                         description: null,
                         hoursPerWeek: null,
+                        jaHours: sumJaHours(report.orphanJas),
                         children: [],
                         jas: report.orphanJas,
                       },

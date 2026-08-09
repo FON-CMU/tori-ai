@@ -14,6 +14,7 @@ import { isDataQueryIntent } from "@/lib/chat/data-query-intent";
 import { normalizeAiModelId, normalizeOpenAiBaseUrl, matchAllowedModel, resolveChatModelCatalog } from "@/lib/validation/ai-settings";
 import { buildMissingFieldQuestion, deriveWorkTitle, findMissingFields, parseCategoryAnswer } from "@/lib/validation/work";
 import { canReadJa } from "@/server/policies/ownership";
+import { sumJaHours } from "@/lib/report/ja-hours";
 
 describe("TORI core business rules", () => {
   it("converts Buddhist years", () => expect(buddhistYearToGregorian(2569)).toBe(2026));
@@ -111,6 +112,14 @@ describe("TORI core business rules", () => {
         "C_3_1",
       ),
     ).toContain("competency");
+  });
+  it("sums actual JA hours for the report's right-hand column", () => {
+    const ja = (totalHours: string) => ({ totalHours });
+    expect(sumJaHours([])).toBe("0");
+    expect(sumJaHours([ja("7")])).toBe("7");
+    expect(sumJaHours([ja("7"), ja("3.5")])).toBe("10.5");
+    // Decimal(6,2) คืนค่าเป็นสตริงที่มีศูนย์ต่อท้าย ต้องไม่โผล่ในฟอร์ม
+    expect(sumJaHours([ja("6.00"), ja("2.00")])).toBe("8");
   });
   it("prevents cross-user JA reads", () => {
     expect(canReadJa({ userId: "a", unitId: "u", roles: ["EMPLOYEE"] }, { userId: "b" })).toBe(false);
