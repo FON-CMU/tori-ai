@@ -16,14 +16,14 @@ const serverEnvSchema = z.object({
   OPENAI_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   OPENAI_MODEL: z.preprocess(emptyToUndefined, z.string().optional()),
   OPENAI_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
-  OPENAI_STORE_RESPONSES: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
-  LOCAL_STORAGE_PATH: z.string().min(1).default("./storage"),
-  OCR_PROVIDER: z.enum(["mock"]).default("mock"),
+  OPENAI_STORE_RESPONSES: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false").transform((value) => value === "true")),
+  LOCAL_STORAGE_PATH: z.preprocess(emptyToUndefined, z.string().min(1).default("./storage")),
+  OCR_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["mock"]).default("mock")),
   OCR_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
-  APP_URL: z.string().url().default("http://localhost:3000"),
-  APP_TIMEZONE: z.literal("Asia/Bangkok").default("Asia/Bangkok"),
-  MAX_TOR_FILE_SIZE_MB: z.coerce.number().int().positive().max(100).default(20),
-  MAX_WORK_HOURS_PER_DAY: z.coerce.number().positive().max(24).default(24),
+  APP_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://localhost:3000")),
+  APP_TIMEZONE: z.preprocess(emptyToUndefined, z.literal("Asia/Bangkok").default("Asia/Bangkok")),
+  MAX_TOR_FILE_SIZE_MB: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(100).default(20)),
+  MAX_WORK_HOURS_PER_DAY: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(24).default(24)),
 });
 
 const parsed = serverEnvSchema.safeParse(process.env);
