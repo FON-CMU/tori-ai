@@ -17,6 +17,7 @@ const serverEnvSchema = z.object({
   OPENAI_MODEL: z.preprocess(emptyToUndefined, z.string().optional()),
   OPENAI_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   OPENAI_STORE_RESPONSES: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false").transform((value) => value === "true")),
+  STORAGE_DRIVER: z.preprocess(emptyToUndefined, z.enum(["local", "vercel-blob"]).default("local")),
   LOCAL_STORAGE_PATH: z.preprocess(emptyToUndefined, z.string().min(1).default("./storage")),
   OCR_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["mock"]).default("mock")),
   OCR_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),

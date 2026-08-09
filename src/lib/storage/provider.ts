@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { env } from "@/lib/env";
+import { VercelBlobStorage } from "@/lib/storage/vercel-blob-storage";
 
 export interface ObjectStorage {
   put(key: string, bytes: Uint8Array): Promise<void>;
@@ -37,4 +38,7 @@ export class LocalFileStorage implements ObjectStorage {
   }
 }
 
-export const objectStorage = new LocalFileStorage();
+// Selected by an explicit env var rather than sniffing the platform: a wrong
+// guess here silently writes uploads to a disk that disappears.
+export const objectStorage: ObjectStorage =
+  env.STORAGE_DRIVER === "vercel-blob" ? new VercelBlobStorage() : new LocalFileStorage();

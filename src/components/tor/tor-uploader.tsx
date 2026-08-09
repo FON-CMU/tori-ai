@@ -54,7 +54,7 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
         disabled={uploading}
       />
       <p className="font-medium">PDF หรือ DOCX ขนาดไม่เกิน {maxSizeMb} MB</p>
-      <p className="mt-1 text-sm text-stone-500">ไฟล์จะถูกเก็บอย่างปลอดภัยในพื้นที่ของ TORI บนเครื่องนี้</p>
+      <p className="mt-1 text-sm text-stone-500">ไฟล์จะถูกเก็บอย่างปลอดภัยในพื้นที่ส่วนตัวของคุณ เข้าถึงได้เฉพาะระบบ TORI</p>
 
       <label className="mx-auto mt-5 flex max-w-xs flex-col gap-2 text-left">
         <span className="text-sm font-medium text-stone-700">ปีของ TOR (พ.ศ.)</span>
