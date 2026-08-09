@@ -11,10 +11,16 @@ const globalForPrisma = globalThis as unknown as {
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
-    adapter: new PrismaPg({ connectionString: requireDatabaseEnv() }),
+    adapter: new PrismaPg({
+      connectionString: requireDatabaseEnv(),
+      max: 5,
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+    }),
     log: ["error", "warn"],
   });
 
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
-}
+// Cached in every environment, not only development. Next bundles each route
+// handler separately and a serverless instance serves many requests, so
+// skipping this in production means one pg Pool per bundle per instance.
+globalForPrisma.prisma = prisma;
