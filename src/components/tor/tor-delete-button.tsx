@@ -9,7 +9,11 @@ export function TorDeleteButton({ id, fileName }: { id: string; fileName: string
   const [error, setError] = useState<string | null>(null);
 
   async function remove() {
-    if (!window.confirm(`ลบ TOR “${fileName}” หรือไม่? การกระทำนี้ไม่สามารถย้อนกลับได้`)) return;
+    if (
+      !window.confirm(
+        `ลบ TOR “${fileName}” ออกจากรายการหรือไม่?\n\nไฟล์ต้นฉบับจะถูกลบทิ้ง แต่ผลการปฏิบัติงาน (JA) ที่บันทึกไว้ยังอยู่ในระบบ`,
+      )
+    ) return;
     setBusy(true);
     setError(null);
     try {

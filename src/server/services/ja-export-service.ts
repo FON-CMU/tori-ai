@@ -338,13 +338,46 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
     }
   }
 
-  function drawRow(values: [string, string, string, string], boldHeader = false) {
-    const heights = values.map((value, index) =>
-      doc.heightOfString(value || " ", {
-        width: cols[index].width - 10,
-        lineGap: 1.5,
-      }),
-    );
+  const usableHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom - 12;
+
+  function measure(text: string, index: number) {
+    return doc.heightOfString(text || " ", { width: cols[index].width - 10, lineGap: 1.5 });
+  }
+
+  /**
+   * แถวเดียวที่สูงเกินหนึ่งหน้า (หัวข้อที่มีรายการย่อยเยอะ หรือ JA ที่รายละเอียดยาว)
+   * ทำให้กรอบถูกวาดค้างไว้หน้าเดิมขณะที่ข้อความไหลไปหน้าถัดไป จึงหั่นเป็นท่อนที่สูง
+   * ไม่เกินหนึ่งหน้าก่อน แล้ววาดเป็นแถวต่อเนื่องกัน ตัดตามบรรทัดที่ประกอบเซลล์อยู่แล้ว
+   * แต่ละคอลัมน์หั่นอิสระจากกัน เพราะเนื้อหาคนละฝั่งไม่ได้อ้างอิงบรรทัดต่อบรรทัด
+   */
+  type RowValues = [string, string, string, string];
+  function splitRow(values: RowValues, limit: number): RowValues[] {
+    if (values.every((value, index) => measure(value, index) <= limit)) return [values];
+    const pending = values.map((value) => (value || "").split("\n"));
+    const segments: RowValues[] = [];
+    while (pending.some((lines) => lines.length)) {
+      const segment = pending.map((lines, index) => {
+        const taken: string[] = [];
+        while (lines.length) {
+          // บรรทัดเดียวที่สูงเกิน limit ยังต้องหยิบ ไม่งั้นวนไม่จบ
+          if (taken.length && measure([...taken, lines[0]].join("\n"), index) > limit) break;
+          taken.push(lines.shift() as string);
+        }
+        return taken.join("\n");
+      }) as RowValues;
+      segments.push(segment);
+    }
+    return segments;
+  }
+
+  function drawRow(values: RowValues, boldHeader = false) {
+    doc.font(boldHeader ? "Thai-Bold" : "Thai").fontSize(boldHeader ? 12 : 11);
+    for (const segment of splitRow(values, usableHeight)) drawSegment(segment, boldHeader);
+  }
+
+  function drawSegment(values: RowValues, boldHeader: boolean) {
+    doc.font(boldHeader ? "Thai-Bold" : "Thai").fontSize(boldHeader ? 12 : 11);
+    const heights = values.map((value, index) => measure(value, index));
     const rowHeight = Math.max(...heights, 18) + 12;
     ensureSpace(rowHeight);
     const top = doc.y;

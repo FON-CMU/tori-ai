@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
 
+import type { Prisma } from "@/generated/prisma/client";
 import { currentBuddhistYear } from "@/lib/date";
 import { env } from "@/lib/env";
 import { ApiError } from "@/lib/http/api-error";
@@ -86,11 +87,38 @@ export async function updateTorYear(userId: string, torDocumentId: string, yearI
   });
 }
 
+/**
+ * ลบเอกสารออกจากรายการ (archive) — ไม่ลบแถวจริง
+ *
+ * การลบแถวจะพาหัวข้อ TOR หายตามไปด้วย (onDelete: Cascade) แล้ว JA ที่ผูกอยู่จะถูก
+ * SetNull ทั้ง torDocumentId และ torTopicId คือผลงานที่ยืนยันแล้วหลุดออกจากฟอร์ม
+ * อย่างกู้ไม่ได้ การ archive เก็บทั้งแถวและสายสัมพันธ์ไว้ ส่วนไฟล์ต้นฉบับลบทิ้งจริง
+ * เพราะเป็นเอกสารบุคคล และ processTor ปฏิเสธเอกสารสถานะ ARCHIVED อยู่แล้ว
+ */
 export async function deleteTor(userId: string, torDocumentId: string) {
-  const document = await prisma.torDocument.findFirst({ where: { id: torDocumentId, userId } });
+  const document = await prisma.torDocument.findFirst({
+    where: { id: torDocumentId, userId, status: { not: "ARCHIVED" } },
+  });
   if (!document) throw new ApiError(404, "TOR_NOT_FOUND", "ไม่พบเอกสาร TOR");
 
-  await prisma.torDocument.delete({ where: { id: document.id } });
+  const before = JSON.parse(JSON.stringify(document)) as Prisma.InputJsonValue;
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.torDocument.update({
+      where: { id: document.id },
+      data: { status: "ARCHIVED" },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "TOR_ARCHIVED",
+        objectType: "TorDocument",
+        objectId: document.id,
+        beforeJson: before,
+        afterJson: JSON.parse(JSON.stringify(updated)) as Prisma.InputJsonValue,
+      },
+    });
+  });
+
   await objectStorage.delete(document.storageKey);
   return { id: document.id };
 }

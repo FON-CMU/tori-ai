@@ -15,6 +15,7 @@ import { normalizeAiModelId, normalizeOpenAiBaseUrl, matchAllowedModel, resolveC
 import { buildMissingFieldQuestion, deriveWorkTitle, findMissingFields, parseCategoryAnswer } from "@/lib/validation/work";
 import { canReadJa } from "@/server/policies/ownership";
 import { sumJaHours } from "@/lib/report/ja-hours";
+import { topicIdentity } from "@/lib/tor/topic-identity";
 
 describe("TORI core business rules", () => {
   it("converts Buddhist years", () => expect(buddhistYearToGregorian(2569)).toBe(2026));
@@ -120,6 +121,22 @@ describe("TORI core business rules", () => {
     expect(sumJaHours([ja("7"), ja("3.5")])).toBe("10.5");
     // Decimal(6,2) คืนค่าเป็นสตริงที่มีศูนย์ต่อท้าย ต้องไม่โผล่ในฟอร์ม
     expect(sumJaHours([ja("6.00"), ja("2.00")])).toBe("8");
+  });
+  it("matches the same TOR topic across a re-analysis despite whitespace drift", () => {
+    const before = { kind: "TOPIC", code: "3.1", title: "การพัฒนาตนเอง  เช่น การอบรม" };
+    const after = { kind: "TOPIC", code: " 3.1 ", title: " การพัฒนาตนเอง เช่น การอบรม " };
+    expect(topicIdentity(after)).toBe(topicIdentity(before));
+  });
+  it("keeps different TOR topics apart", () => {
+    expect(topicIdentity({ kind: "TOPIC", code: "3.1", title: "ก" })).not.toBe(
+      topicIdentity({ kind: "SUBITEM", code: "3.1", title: "ก" }),
+    );
+    expect(topicIdentity({ kind: "TOPIC", code: "3.1", title: "ก" })).not.toBe(
+      topicIdentity({ kind: "TOPIC", code: "3.2", title: "ก" }),
+    );
+    expect(topicIdentity({ kind: "TOPIC", code: null, title: "ก" })).not.toBe(
+      topicIdentity({ kind: "TOPIC", code: null, title: "ข" }),
+    );
   });
   it("prevents cross-user JA reads", () => {
     expect(canReadJa({ userId: "a", unitId: "u", roles: ["EMPLOYEE"] }, { userId: "b" })).toBe(false);

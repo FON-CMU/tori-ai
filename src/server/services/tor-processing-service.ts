@@ -7,6 +7,7 @@ import { ApiError } from "@/lib/http/api-error";
 import { extractTor } from "@/lib/openai/client";
 import { prisma } from "@/lib/prisma";
 import { objectStorage } from "@/lib/storage/provider";
+import { topicIdentity } from "@/lib/tor/topic-identity";
 
 async function extractPages(mimeType: string, bytes: Uint8Array) {
   if (mimeType === "application/pdf") {
@@ -97,6 +98,37 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
     if (!extraction.topics.length) throw new Error("NO_TOPICS");
 
     await prisma.$transaction(async (tx) => {
+      // JA ผูกหัวข้อผ่าน torTopicId ที่ schema ตั้ง onDelete: SetNull ไว้ การลบหัวข้อ
+      // ทิ้งทั้งชุดเพื่อสร้างใหม่จึงตัดสายนี้ขาดทุกเส้นแบบเงียบ ๆ — ผลงานที่ยืนยันแล้ว
+      // จะหลุดออกจากฟอร์มโดยไม่มีใครรู้ เก็บคู่ (id, คีย์หัวข้อ) ไว้ก่อนแล้วผูกกลับ
+      const linkSelect = {
+        id: true,
+        torTopic: { select: { kind: true, code: true, title: true } },
+      } as const;
+      const jaLinks = await tx.jaRecord.findMany({
+        where: { userId, torTopic: { torDocumentId: document.id } },
+        select: linkSelect,
+      });
+      const draftLinks = await tx.workDraft.findMany({
+        where: { userId, torTopic: { torDocumentId: document.id } },
+        select: linkSelect,
+      });
+
+      // ฉบับเดิมของปีเดียวกันถูกแทนที่ด้วยฉบับนี้ ย้าย JA ของฉบับนั้นตามมาด้วย
+      // ไม่งั้นพออีกฉบับถูก archive รายงานของมันจะหายไปพร้อมผลงานที่บันทึกไว้
+      const superseded = activate
+        ? await tx.torDocument.findMany({
+            where: { userId, year: document.year, status: "ACTIVE", id: { not: document.id } },
+            select: { id: true },
+          })
+        : [];
+      const supersededJaLinks = superseded.length
+        ? await tx.jaRecord.findMany({
+            where: { userId, torDocumentId: { in: superseded.map((row) => row.id) } },
+            select: linkSelect,
+          })
+        : [];
+
       // ตัด parent ก่อน แล้วลบทั้งชุดเพื่อแทนที่ด้วยโครงใหม่ตามไฟล์
       await tx.torTopic.updateMany({
         where: { torDocumentId: document.id },
@@ -105,6 +137,7 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
       await tx.torTopic.deleteMany({ where: { torDocumentId: document.id } });
 
       const keyToId = new Map<string, string>();
+      const idByTopicKey = new Map<string, string>();
       const sorted = [...extraction.topics].sort((a, b) => a.sortOrder - b.sortOrder);
 
       for (const topic of sorted) {
@@ -132,6 +165,38 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
           select: { id: true },
         });
         keyToId.set(topic.selfKey, created.id);
+        idByTopicKey.set(topicIdentity(topic), created.id);
+      }
+
+      // ผูกกลับ: หัวข้อที่ AI อ่านได้เหมือนเดิม (kind + code + title) ถือว่าเป็นหัวข้อ
+      // เดียวกัน ส่วนหัวข้อที่หายไปจากไฟล์ JA จะกลายเป็นรายการที่ยังไม่ผูกหัวข้อ
+      // ซึ่งยังเห็นในฟอร์ม ต่างจากเดิมที่หายไปทั้งเงียบ ๆ
+      const jaByTarget = new Map<string | null, string[]>();
+      for (const link of [...jaLinks, ...supersededJaLinks]) {
+        const target = link.torTopic ? idByTopicKey.get(topicIdentity(link.torTopic)) ?? null : null;
+        jaByTarget.set(target, [...(jaByTarget.get(target) ?? []), link.id]);
+      }
+      for (const [target, ids] of jaByTarget) {
+        await tx.jaRecord.updateMany({
+          where: { id: { in: ids } },
+          data: { torTopicId: target, torDocumentId: document.id },
+        });
+      }
+
+      const draftByTarget = new Map<string | null, string[]>();
+      for (const link of draftLinks) {
+        const target = link.torTopic ? idByTopicKey.get(topicIdentity(link.torTopic)) ?? null : null;
+        draftByTarget.set(target, [...(draftByTarget.get(target) ?? []), link.id]);
+      }
+      for (const [target, ids] of draftByTarget) {
+        await tx.workDraft.updateMany({ where: { id: { in: ids } }, data: { torTopicId: target } });
+      }
+
+      if (superseded.length) {
+        await tx.torDocument.updateMany({
+          where: { id: { in: superseded.map((row) => row.id) } },
+          data: { status: "ARCHIVED" },
+        });
       }
 
       await tx.torDocument.update({

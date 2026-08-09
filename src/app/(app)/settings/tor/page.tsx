@@ -20,7 +20,9 @@ const statusLabel = {
 export default async function SettingsTorPage() {
   const { userId } = await requirePageSession();
   const docs = await prisma.torDocument.findMany({
-    where: { userId },
+    // ARCHIVED = ฉบับที่ผู้ใช้ลบ หรือถูกฉบับใหม่ปีเดียวกันแทนที่ — แถวยังอยู่เพื่อ
+    // เก็บประวัติและ audit แต่ไม่ต้องรกหน้าจอ
+    where: { userId, status: { not: "ARCHIVED" } },
     orderBy: [{ year: "desc" }, { version: "desc" }],
     include: {
       topics: { orderBy: [{ sortOrder: "asc" }, { title: "asc" }] },
