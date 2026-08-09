@@ -148,10 +148,40 @@ export const workExtractionSchema = z.object({
 
 export type WorkExtraction = z.infer<typeof workExtractionSchema>;
 
+const WORK_FIELD_KEYS = [
+  "workTitle",
+  "category",
+  "workSubtype",
+  "description",
+  "location",
+  "relatedUnit",
+  "eventDate",
+  "startAt",
+  "startTime",
+  "totalHours",
+  "competency",
+] as const;
+
+/**
+ * เกตเวย์ไม่มี structured output โมเดลจึงมักห่อฟิลด์ทั้งก้อนไว้ใต้ currentDraft
+ * ตามคำสั่ง "รวมข้อมูลใหม่เข้ากับ currentDraft" ใน prompt — คลายออกมาให้แบน
+ * โดยคงคีย์ระดับบน (nextQuestion, userFacingReply) ไว้เหนือกว่าเสมอ
+ */
+function unwrapWorkRecord(record: Record<string, unknown>) {
+  if (WORK_FIELD_KEYS.some((key) => record[key] !== undefined)) return record;
+  for (const wrapper of ["currentDraft", "draft", "workDraft", "work", "data"]) {
+    const nested = record[wrapper];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      return { ...(nested as Record<string, unknown>), ...record };
+    }
+  }
+  return record;
+}
+
 /** แปลง JSON จากเกตเวย์ที่มักไม่ตรง schema เป๊ะ ให้ใช้งานได้ */
 export function normalizeWorkExtraction(raw: unknown): WorkExtraction {
   const record = raw && typeof raw === "object" && !Array.isArray(raw)
-    ? (raw as Record<string, unknown>)
+    ? unwrapWorkRecord(raw as Record<string, unknown>)
     : {};
 
   const userFacingReply =

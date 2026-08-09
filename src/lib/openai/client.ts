@@ -174,8 +174,14 @@ async function completeJson(
       const response = await client.chat.completions.create(body, {
         timeout: budget.take(config.baseURL ? 180_000 : 60_000),
       });
-      const text = response.choices[0]?.message?.content;
+      const choice = response.choices[0];
+      const text = choice?.message?.content;
       if (!text) throw new Error("AI did not return content");
+      // โมเดลตระกูลคิดก่อนตอบใช้โควตา max_tokens ไปกับการคิด จน JSON ถูกตัดกลางคัน
+      // ถ้าไม่ดักตรงนี้ ผู้ใช้จะเห็นเป็น "Unterminated string in JSON" ซึ่งไม่บอกสาเหตุ
+      if (choice.finish_reason === "length") {
+        throw new Error("finish_reason=length: AI ตอบไม่จบเพราะชนขีดจำกัดความยาว");
+      }
       return extractJsonObject(text);
     } catch (reason) {
       const formatted = formatAiError(reason);
@@ -336,7 +342,9 @@ export async function extractWork(
       content,
       {
         preferJsonObject: true,
-        maxTokens: 2_048,
+        // เผื่อโควตาให้โมเดลที่คิดก่อนตอบ — ผลลัพธ์จริงยาวราว 400 tokens เท่านั้น
+        // และค่านี้เป็นเพดาน ไม่ใช่ยอดที่ถูกเรียกเก็บ
+        maxTokens: 8_192,
         normalize: normalizeWorkExtraction,
       },
     );

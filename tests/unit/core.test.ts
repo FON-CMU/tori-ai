@@ -145,6 +145,17 @@ describe("TORI core business rules", () => {
     });
     expect(catalog.models).toEqual(["Qwen/Qwen2.5-72B"]);
   });
+  it("offers only live Gemini defaults and keeps the admin's choice first", () => {
+    const catalog = resolveChatModelCatalog({
+      provider: "GOOGLE_AI_STUDIO",
+      defaultModel: "gemini-3.1-pro-preview",
+      configuredModels: [],
+    });
+    expect(catalog.models[0]).toBe("gemini-3.1-pro-preview");
+    expect(catalog.models).toContain("gemini-3.5-flash");
+    // ตระกูล 2.x ถูกปลดระวาง (404/429) — อย่าให้กลับเข้ามาในดรอปดาวน์อีก
+    expect(catalog.models.some((model) => model.startsWith("gemini-2."))).toBe(false);
+  });
   it("matches allowed models case-insensitively", () => {
     expect(matchAllowedModel("qwen/qwen2.5-72b", ["Qwen/Qwen2.5-72B"])).toBe("Qwen/Qwen2.5-72B");
   });
@@ -165,6 +176,35 @@ describe("TORI core business rules", () => {
     expect(parsed.totalHours).toBe(6.5);
     expect(parsed.confidence).toBe(0.8);
     expect(parsed.userFacingReply).toBe("ถามสมรรถนะ");
+  });
+  it("unwraps work fields nested under currentDraft", () => {
+    const parsed = normalizeWorkExtraction({
+      currentDraft: {
+        workTitle: "อบรม Basic Generative AI",
+        category: "DEVELOPMENT",
+        workSubtype: "C_3_1",
+        location: "โรงแรมคุ้มภูคำ",
+        eventDate: "2026-08-09",
+        startTime: "09:00",
+        endTime: "16:00",
+        totalHours: 7,
+      },
+      nextQuestion: null,
+      userFacingReply: "บันทึกให้แล้วค่ะ",
+    });
+    expect(parsed.workTitle).toBe("อบรม Basic Generative AI");
+    expect(parsed.workSubtype).toBe("C_3_1");
+    expect(parsed.location).toBe("โรงแรมคุ้มภูคำ");
+    expect(parsed.totalHours).toBe(7);
+    expect(parsed.userFacingReply).toBe("บันทึกให้แล้วค่ะ");
+  });
+  it("keeps flat payloads untouched when a currentDraft echo is present", () => {
+    const parsed = normalizeWorkExtraction({
+      workTitle: "งานจริง",
+      currentDraft: { workTitle: "ค่าเดิมที่ไม่ควรชนะ" },
+      userFacingReply: "ok",
+    });
+    expect(parsed.workTitle).toBe("งานจริง");
   });
   it("normalizes messy TOR extraction payloads", () => {
     const parsed = normalizeTorExtraction({

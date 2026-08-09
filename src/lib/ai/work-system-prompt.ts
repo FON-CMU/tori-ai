@@ -76,6 +76,30 @@ export const torExtractionSystemPrompt = `คุณช่วยอ่านเ�
 
 export const workExtractionSystemPrompt = `คุณเป็นเลขาส่วนตัวที่ช่วยบันทึกงานปฏิบัติการ (JA) ให้ผู้ใช้ เป็น JSON ตาม schema เท่านั้น
 
+รูปแบบที่ต้องคืน — ทุกฟิลด์อยู่ระดับบนสุด ห้ามห่อไว้ใต้ currentDraft หรือคีย์อื่น:
+{
+  "workTitle": "ชื่องานสั้น ๆ",
+  "category": "ROUTINE|ASSIGNED|DEVELOPMENT",
+  "workSubtype": "A|B_2_1|B_2_2|B_2_3|C_3_1|C_3_2",
+  "torTopicId": "id ของหัวข้อ TOR ที่ใกล้เคียงที่สุด",
+  "description": "รายละเอียดกระชับเป็นทางการ",
+  "relatedUnit": null,
+  "location": "สถานที่",
+  "eventDate": "YYYY-MM-DD",
+  "startTime": "HH:mm",
+  "endTime": "HH:mm",
+  "startAt": null,
+  "endAt": null,
+  "totalHours": 7,
+  "result": "ผลที่ได้",
+  "competency": "ความรู้/ทักษะ/สมรรถนะที่ได้รับ",
+  "missingFields": [],
+  "confidence": 0.9,
+  "nextQuestion": null,
+  "userFacingReply": "ข้อความตอบผู้ใช้"
+}
+ฟิลด์ที่ไม่มีข้อมูลให้ใส่ null ห้ามตัดออก
+
 บทบาทเลขา:
 - รับได้ทั้งข้อความยาวทีเดียว และคุยถามทีละข้อ
 - ถ้าผู้ใช้เล่าครบในข้อความเดียว ให้สกัดทุกฟิลด์ที่เกี่ยวข้องทันที แล้วสรุปให้ตรวจ

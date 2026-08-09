@@ -604,6 +604,8 @@ export async function sendChatMessage(
     console.error("[chat] extractWork failed:", detail);
     const fallback = /timed?\s*out|timeout/i.test(detail)
       ? `เกตเวย์ AI ตอบช้าเกินเวลา (โมเดล ${detail.match(/model=([^;]+)/)?.[1]?.trim() ?? "ที่ตั้งค่าไว้"}) กรุณาลองใหม่ หรือเปลี่ยนโมเดลที่ตั้งค่า AI เป็นตัวที่ตอบเร็วกว่า`
+      : /finish_reason=length/i.test(detail)
+        ? `โมเดล ${detail.match(/model=([^;]+)/)?.[1]?.trim() ?? "ที่ตั้งค่าไว้"} ตอบไม่จบเพราะใช้โควตาความยาวไปกับการคิด กรุณาลองใหม่ หรือเปลี่ยนไปใช้โมเดลที่คิดน้อยกว่าในตั้งค่า AI`
       : /HTTP 400|ไม่อยู่ในรายการ|invalid model|API key|ตั้งค่า/i.test(detail)
         ? `วิเคราะห์ไม่สำเร็จ: ตรวจการตั้งค่า AI / ชื่อโมเดล — ${detail.slice(0, 220)}`
         : "ระบบยังวิเคราะห์ข้อความไม่สำเร็จ กรุณาตรวจการตั้งค่า AI หรือลองเล่ารายละเอียดงานอีกครั้ง";
