@@ -1,5 +1,3 @@
-import { NextResponse } from "next/server";
-
 import { requireSession } from "@/lib/auth/session";
 import { ApiError, errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
