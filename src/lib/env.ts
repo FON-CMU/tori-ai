@@ -9,6 +9,10 @@ const serverEnvSchema = z.object({
   DATABASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   DIRECT_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   AUTH_SECRET: z.preprocess(emptyToUndefined, z.string().min(32).optional()),
+  // Temporary sign-in for deployments that have no CMU OIDC credentials yet.
+  // Both must be present; either alone leaves the endpoint disabled.
+  ALLOW_MOCK_LOGIN: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")).transform((value) => value === "true"),
+  MOCK_LOGIN_PASSWORD: z.preprocess(emptyToUndefined, z.string().min(24).optional()),
   CMU_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().optional()),
   CMU_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
   CMU_ISSUER: z.preprocess(emptyToUndefined, z.string().url().optional()),
