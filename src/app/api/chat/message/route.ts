@@ -6,6 +6,9 @@ import { ApiError, errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
 import { sendChatMessage } from "@/server/services/chat-service";
 
+// AI work extraction; see the budget in lib/openai/client.
+export const maxDuration = 300;
+
 export async function POST(request: Request) {
   const requestId = getRequestId(request);
   try {

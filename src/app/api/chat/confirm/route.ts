@@ -5,6 +5,8 @@ import { ApiError, errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
 import { confirmChatDraft } from "@/server/services/chat-service";
 
+export const maxDuration = 60;
+
 export async function POST(request: Request) {
   const requestId = getRequestId(request);
   try {

@@ -13,31 +13,53 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [year, setYear] = useState(() => currentBuddhistYear());
-  const [uploading, setUploading] = useState(false);
+  const [stage, setStage] = useState<"idle" | "uploading" | "processing">("idle");
   const [message, setMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
+  const uploading = stage !== "idle";
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    setUploading(true);
+
+    // Hosting platforms reject an oversized body before the route handler runs,
+    // which would surface as an opaque 413 instead of this message.
+    if (file.size > maxSizeMb * 1024 * 1024) {
+      setMessage({ type: "error", text: `ไฟล์ต้องมีขนาดไม่เกิน ${maxSizeMb} MB` });
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
+
+    setStage("uploading");
     setMessage(null);
     try {
       const form = new FormData();
       form.set("file", file);
       form.set("year", String(year));
       const response = await fetch("/api/tor/upload", { method: "POST", body: form });
-      const result = await response.json() as { error?: { message?: string } };
-      if (!response.ok) throw new Error(result.error?.message ?? "อัปโหลดไม่สำเร็จ");
+      const result = await response.json() as { data?: { id: string }; error?: { message?: string } };
+      if (!response.ok || !result.data) throw new Error(result.error?.message ?? "อัปโหลดไม่สำเร็จ");
+
+      setStage("processing");
       setMessage({
         type: "success",
-        text: `อัปโหลด TOR ปี พ.ศ. ${year} สำเร็จ ระบบกำลังอ่านเอกสารและแยกหัวข้อด้วย AI`,
+        text: `อัปโหลด TOR ปี พ.ศ. ${year} สำเร็จ กำลังอ่านเอกสารและแยกหัวข้อด้วย AI…`,
       });
+
+      const processed = await fetch(`/api/tor/${result.data.id}/process`, { method: "POST" });
+      const processedResult = await processed.json() as { error?: { message?: string } };
+      if (!processed.ok) {
+        // The file is saved either way — the card below offers a retry button.
+        throw new Error(
+          `${processedResult.error?.message ?? "อ่านเอกสารไม่สำเร็จ"} (ไฟล์ถูกบันทึกแล้ว กดปุ่มประมวลผลในการ์ดด้านล่างเพื่อลองใหม่)`,
+        );
+      }
+      setMessage({ type: "success", text: `TOR ปี พ.ศ. ${year} พร้อมใช้งานในแชทแล้ว` });
       router.refresh();
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "อัปโหลดไม่สำเร็จ" });
       router.refresh();
     } finally {
-      setUploading(false);
+      setStage("idle");
       if (inputRef.current) inputRef.current.value = "";
     }
   }
@@ -78,7 +100,7 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
         disabled={uploading}
         className="mt-5 rounded-xl bg-teal-700 px-5 py-3 text-white hover:bg-teal-800 disabled:cursor-wait disabled:opacity-60"
       >
-        {uploading ? "กำลังอัปโหลด…" : "เลือกไฟล์ TOR"}
+        {stage === "uploading" ? "กำลังอัปโหลด…" : stage === "processing" ? "กำลังวิเคราะห์ด้วย AI…" : "เลือกไฟล์ TOR"}
       </button>
       {message ? (
         <p role="status" className={`mt-3 text-sm ${message.type === "success" ? "text-emerald-700" : "text-red-700"}`}>

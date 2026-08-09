@@ -6,6 +6,8 @@ import { ApiError, errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
 import { testAiConnection } from "@/server/services/ai-settings-service";
 
+export const maxDuration = 60;
+
 function connectionError(error: unknown) {
   if (!(error instanceof OpenAI.APIError)) return error;
   if (error.status === 401 || error.status === 403) {

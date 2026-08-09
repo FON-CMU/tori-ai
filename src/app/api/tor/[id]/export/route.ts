@@ -5,6 +5,8 @@ import { ApiError, errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
 import { exportTorJaDocx, exportTorJaPdf } from "@/server/services/ja-export-service";
 
+export const maxDuration = 120;
+
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const requestId = getRequestId(request);
   try {

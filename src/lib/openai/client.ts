@@ -38,6 +38,32 @@ function isTimeoutError(message: string) {
   return /timed?\s*out|timeout|ETIMEDOUT|AbortError/i.test(message);
 }
 
+/**
+ * One AI operation may make several sequential calls (structured parse, then a
+ * JSON-mode retry, then a bare completion). Each has its own timeout, so the
+ * chain could outlive the hosting platform's function ceiling — and a request
+ * the platform kills returns an opaque 504 instead of the Thai message the
+ * callers already produce. The budget caps the whole chain instead.
+ */
+const AI_TOTAL_BUDGET_MS = 240_000;
+const AI_MIN_ATTEMPT_MS = 20_000;
+
+type AiBudget = { take: (wanted: number) => number };
+
+function startAiBudget(totalMs = AI_TOTAL_BUDGET_MS): AiBudget {
+  const startedAt = Date.now();
+  return {
+    take(wanted: number) {
+      const elapsed = Date.now() - startedAt;
+      const left = totalMs - elapsed;
+      // "timed out" is what isTimeoutError and the Thai error classifiers in
+      // chat-service and tor-processing-service match on.
+      if (left < AI_MIN_ATTEMPT_MS) throw new Error(`AI budget timed out after ${elapsed}ms`);
+      return Math.min(wanted, left);
+    },
+  };
+}
+
 function extractJsonObject(text: string) {
   const trimmed = text.trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -96,6 +122,7 @@ function compactWorkPayload(input: {
 async function completeJson(
   client: OpenAI,
   config: AiConfig,
+  budget: AiBudget,
   system: string,
   user: string,
   options?: { maxTokens?: number },
@@ -139,7 +166,9 @@ async function completeJson(
   const errors: string[] = [];
   for (const body of attempts) {
     try {
-      const response = await client.chat.completions.create(body);
+      const response = await client.chat.completions.create(body, {
+        timeout: budget.take(config.baseURL ? 200_000 : 75_000),
+      });
       const text = response.choices[0]?.message?.content;
       if (!text) throw new Error("AI did not return content");
       return extractJsonObject(text);
@@ -159,6 +188,7 @@ async function completeJson(
 async function parseWithChatCompletions<TSchema, TResult = TSchema>(
   client: OpenAI,
   config: AiConfig,
+  budget: AiBudget,
   schema: z.ZodType<TSchema>,
   name: string,
   system: string,
@@ -182,7 +212,7 @@ async function parseWithChatCompletions<TSchema, TResult = TSchema>(
           { role: "user", content: user },
         ],
         response_format: zodResponseFormat(schema, name),
-      });
+      }, { timeout: budget.take(75_000) });
       const parsed = response.choices[0]?.message.parsed;
       if (parsed) return normalize(parsed);
     } catch {
@@ -190,10 +220,11 @@ async function parseWithChatCompletions<TSchema, TResult = TSchema>(
     }
   }
 
-  return normalize(await completeJson(client, config, system, user, { maxTokens: options?.maxTokens }));
+  return normalize(await completeJson(client, config, budget, system, user, { maxTokens: options?.maxTokens }));
 }
 
 export async function extractTor(_userId: string, text: string) {
+  const budget = startAiBudget();
   const config = await resolveOpenAiSettings();
   const client = new OpenAI({
     apiKey: config.apiKey,
@@ -215,6 +246,7 @@ export async function extractTor(_userId: string, text: string) {
     const parsed = await parseWithChatCompletions(
       client,
       config,
+      budget,
       torExtractionSchema,
       "tor_extraction",
       torExtractionSystemPrompt,
@@ -241,7 +273,7 @@ export async function extractTor(_userId: string, text: string) {
       instructions: torExtractionSystemPrompt,
       input: payload,
       text: { format: zodTextFormat(torExtractionSchema, "tor_extraction") },
-    });
+    }, { timeout: budget.take(90_000) });
     if (!response.output_parsed) throw new Error("AI did not return a valid TOR extraction");
     return normalizeTorExtraction(response.output_parsed);
   } catch (primaryError) {
@@ -249,6 +281,7 @@ export async function extractTor(_userId: string, text: string) {
       return await parseWithChatCompletions(
         client,
         config,
+        budget,
         torExtractionSchema,
         "tor_extraction",
         torExtractionSystemPrompt,
@@ -277,6 +310,7 @@ export async function extractWork(
   },
   options?: { model?: string | null },
 ): Promise<WorkExtraction> {
+  const budget = startAiBudget();
   const config = await resolveOpenAiSettings({ model: options?.model });
   const client = new OpenAI({
     apiKey: config.apiKey,
@@ -290,6 +324,7 @@ export async function extractWork(
     return parseWithChatCompletions(
       client,
       config,
+      budget,
       workExtractionSchema,
       "work_extraction",
       workExtractionSystemPrompt,
@@ -309,7 +344,7 @@ export async function extractWork(
       instructions: workExtractionSystemPrompt,
       input: content,
       text: { format: zodTextFormat(workExtractionSchema, "work_extraction") },
-    });
+    }, { timeout: budget.take(90_000) });
     if (!response.output_parsed) throw new Error("AI did not return a valid work extraction");
     return normalizeWorkExtraction(response.output_parsed);
   } catch (primaryError) {
@@ -317,6 +352,7 @@ export async function extractWork(
       return await parseWithChatCompletions(
         client,
         config,
+        budget,
         workExtractionSchema,
         "work_extraction",
         workExtractionSystemPrompt,

@@ -5,6 +5,9 @@ import { errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
 import { ingestTor } from "@/server/services/tor-processing-service";
 
+// Document parsing plus AI topic extraction; see the budget in lib/openai/client.
+export const maxDuration = 300;
+
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const requestId = getRequestId(request);
   try {

@@ -143,7 +143,10 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
             : null,
         },
       });
-    });
+      // Topics are inserted one at a time because children need their parent's
+      // generated id, so this transaction is held open for one round-trip per
+      // topic. Prisma's 5s default is not enough for a large TOR.
+    }, { timeout: 30_000, maxWait: 10_000 });
 
     return prisma.torDocument.findUniqueOrThrow({
       where: { id: document.id },
