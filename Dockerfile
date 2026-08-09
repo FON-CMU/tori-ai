@@ -6,16 +6,20 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 FROM base AS dependencies
 COPY package.json package-lock.json ./
+# The schema has to be here before npm install, because postinstall runs
+# `prisma generate` and it fails the whole install without one.
+COPY prisma.config.ts ./
+COPY prisma ./prisma
 # npm ci currently rejects npm's cross-platform optional dependency entries
 # (the lock was generated on macOS but the image is Linux). npm install still
 # honors package-lock.json while resolving those platform-specific packages.
 RUN npm install --no-audit --no-fund
 
 FROM dependencies AS database
-COPY prisma.config.ts ./
-COPY prisma ./prisma
-RUN npm run prisma:generate
-CMD ["sh", "-c", "npx prisma migrate deploy && npm run db:seed"]
+# A volume created before this project had migrations was built by `db push`
+# and has no _prisma_migrations table, so `migrate deploy` would fail on
+# already-existing types. Baseline it once, then apply.
+CMD ["sh", "-c", "npx prisma migrate deploy || { npx prisma migrate resolve --applied 0_init && npx prisma migrate deploy; } && npm run db:seed"]
 
 FROM dependencies AS development
 COPY . .

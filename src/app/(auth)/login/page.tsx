@@ -5,7 +5,9 @@ import { env } from "@/lib/env";
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const cmuReady = Boolean(env.CMU_CLIENT_ID && env.CMU_CLIENT_SECRET && env.CMU_ISSUER && env.CMU_REDIRECT_URI);
   const isDevelopment = env.NODE_ENV === "development";
-  const showDemoLogin = isDevelopment || env.ALLOW_MOCK_LOGIN;
+  // Must match the route's own gate exactly, or a half-configured deployment
+  // renders a form whose every submission lands on a bare 404.
+  const showDemoLogin = isDevelopment || (env.ALLOW_MOCK_LOGIN && Boolean(env.MOCK_LOGIN_PASSWORD));
   const error = (await searchParams).error;
 
   return (

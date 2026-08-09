@@ -44,8 +44,13 @@ function isTimeoutError(message: string) {
  * chain could outlive the hosting platform's function ceiling — and a request
  * the platform kills returns an opaque 504 instead of the Thai message the
  * callers already produce. The budget caps the whole chain instead.
+ *
+ * It covers only the model calls. The surrounding request also pays for a cold
+ * start, the session check, two settings queries, document parsing and the
+ * topic transaction, so this sits well under the 300s route ceiling rather
+ * than filling it.
  */
-const AI_TOTAL_BUDGET_MS = 240_000;
+const AI_TOTAL_BUDGET_MS = 200_000;
 const AI_MIN_ATTEMPT_MS = 20_000;
 
 type AiBudget = { take: (wanted: number) => number };
@@ -167,7 +172,7 @@ async function completeJson(
   for (const body of attempts) {
     try {
       const response = await client.chat.completions.create(body, {
-        timeout: budget.take(config.baseURL ? 200_000 : 75_000),
+        timeout: budget.take(config.baseURL ? 180_000 : 60_000),
       });
       const text = response.choices[0]?.message?.content;
       if (!text) throw new Error("AI did not return content");
@@ -212,7 +217,7 @@ async function parseWithChatCompletions<TSchema, TResult = TSchema>(
           { role: "user", content: user },
         ],
         response_format: zodResponseFormat(schema, name),
-      }, { timeout: budget.take(75_000) });
+      }, { timeout: budget.take(60_000) });
       const parsed = response.choices[0]?.message.parsed;
       if (parsed) return normalize(parsed);
     } catch {
@@ -273,7 +278,7 @@ export async function extractTor(_userId: string, text: string) {
       instructions: torExtractionSystemPrompt,
       input: payload,
       text: { format: zodTextFormat(torExtractionSchema, "tor_extraction") },
-    }, { timeout: budget.take(90_000) });
+    }, { timeout: budget.take(80_000) });
     if (!response.output_parsed) throw new Error("AI did not return a valid TOR extraction");
     return normalizeTorExtraction(response.output_parsed);
   } catch (primaryError) {
@@ -344,7 +349,7 @@ export async function extractWork(
       instructions: workExtractionSystemPrompt,
       input: content,
       text: { format: zodTextFormat(workExtractionSchema, "work_extraction") },
-    }, { timeout: budget.take(90_000) });
+    }, { timeout: budget.take(80_000) });
     if (!response.output_parsed) throw new Error("AI did not return a valid work extraction");
     return normalizeWorkExtraction(response.output_parsed);
   } catch (primaryError) {

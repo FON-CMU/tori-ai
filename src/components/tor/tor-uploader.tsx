@@ -9,6 +9,24 @@ function yearOptions(center: number) {
   return Array.from({ length: 7 }, (_, index) => center - 3 + index);
 }
 
+/**
+ * A rejected upload does not always come from the app. A hosting platform
+ * answers an oversized body or a function timeout itself, in HTML, so parsing
+ * the response as JSON unconditionally surfaces a raw SyntaxError to the user.
+ */
+async function readJson<T>(response: Response): Promise<{ data?: T; error?: { message?: string } }> {
+  try {
+    return await response.json() as { data?: T; error?: { message?: string } };
+  } catch {
+    if (response.ok) return {};
+    const byStatus: Record<number, string> = {
+      413: "ไฟล์ใหญ่เกินกว่าที่เซิร์ฟเวอร์รับได้ กรุณาใช้ไฟล์ที่เล็กลง",
+      504: "เซิร์ฟเวอร์ใช้เวลานานเกินกำหนด กรุณาลองใหม่",
+    };
+    return { error: { message: byStatus[response.status] ?? `เซิร์ฟเวอร์ตอบกลับผิดพลาด (${response.status})` } };
+  }
+}
+
 export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -36,7 +54,7 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
       form.set("file", file);
       form.set("year", String(year));
       const response = await fetch("/api/tor/upload", { method: "POST", body: form });
-      const result = await response.json() as { data?: { id: string }; error?: { message?: string } };
+      const result = await readJson<{ id: string }>(response);
       if (!response.ok || !result.data) throw new Error(result.error?.message ?? "อัปโหลดไม่สำเร็จ");
 
       setStage("processing");
@@ -46,10 +64,7 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
       });
 
       const processed = await fetch(`/api/tor/${result.data.id}/process`, { method: "POST" });
-      const processedResult = await processed.json() as {
-        data?: { status?: string; topicCount?: number };
-        error?: { message?: string };
-      };
+      const processedResult = await readJson<{ status?: string; topicCount?: number }>(processed);
       if (!processed.ok) {
         // The file is saved either way — the card below offers a retry button.
         throw new Error(

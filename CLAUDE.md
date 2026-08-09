@@ -20,15 +20,17 @@ npm run build               # next build; if Turbopack cannot spawn workers, use
 npm run prisma:generate     # REQUIRED before typecheck/build/test on a fresh clone (see below)
 npm run prisma:migrate      # prisma migrate dev
 npm run db:seed             # seeds demo user demo.user@cmu.ac.th with EMPLOYEE + ADMIN
-npm run docker:up           # postgres + db push + seed + app on :4600
+npm run docker:up           # postgres + migrate deploy + seed + app on :4600
 npm run docker:reset        # docker compose down --volumes (destroys the DB volume)
 ```
 
 Single test: `npx vitest run tests/unit/core.test.ts`, or by name: `npx vitest run -t "converts Buddhist years"`.
 
-The Prisma client is generated into `src/generated/prisma` (gitignored), so **nothing type-checks until `prisma:generate` has run**. Import it as `@/generated/prisma/client` — never `@prisma/client`.
+The Prisma client is generated into `src/generated/prisma` (gitignored), so **nothing type-checks until it has been generated**. `postinstall` runs `prisma generate`, so a plain `npm install` is enough; `npm run prisma:generate` re-runs it after a schema edit. Import it as `@/generated/prisma/client` — never `@prisma/client`.
 
-`prisma/migrations/` does not exist yet; the Docker `database` stage uses `prisma db push --accept-data-loss` instead. `npm run prisma:migrate` would author the first migration.
+Migrations live in `prisma/migrations/` and are **applied by hand, never from a build**: `npx prisma migrate dev --name <change>` locally, then `npx prisma migrate deploy` against the target database. The Docker `database` stage runs `migrate deploy` for the same reason. Deploying code that expects a new column without running it first fails at runtime.
+
+`prisma.config.ts` reads `DATABASE_URL` for every CLI command; there is deliberately no `DIRECT_URL`. Neon's pooler handles both runtime queries and migrations here — if a `migrate` command ever fails on an advisory lock, set `PRISMA_SCHEMA_DISABLE_ADVISORY_LOCK=true` for that one command.
 
 ## Layering
 
@@ -49,7 +51,7 @@ Success: `{ data, requestId }`. Failure: throw `ApiError(status, code, thaiMessa
 
 ## Domain flow
 
-1. **TOR ingest** — `uploadTor` (magic-byte MIME sniff, sha256 dedupe, per-user version bump, stored via `objectStorage`) → `processTor` (pdf-parse / mammoth → `TorPage` rows, status `REVIEW_REQUIRED`) → `analyzeTor` (AI → deletes and rebuilds the `TorTopic` tree, status `ACTIVE`). `ingestTor` chains both and tolerates analysis failure. [src/server/services/tor-processing-service.ts](src/server/services/tor-processing-service.ts)
+1. **TOR ingest** — `uploadTor` (magic-byte MIME sniff, sha256 dedupe, per-user version bump, stored via `objectStorage`) → `processTor` (pdf-parse / mammoth → `TorPage` rows, status `REVIEW_REQUIRED`) → `analyzeTor` (AI → deletes and rebuilds the `TorTopic` tree, status `ACTIVE`). `ingestTor` chains both and tolerates analysis failure — so a 200 from `/api/tor/[id]/process` means the text was read, **not** that the document has topics. `POST /api/tor/upload` only stores the file; the client calls process as a second request. [src/server/services/tor-processing-service.ts](src/server/services/tor-processing-service.ts)
 2. **TorTopic is a tree** with `kind` SECTION → TOPIC → SUBITEM, preserving the form's numbering. Only rows that are `kind: TOPIC`, `matchable: true`, `status: CONFIRMED`, on a `torDocument.status: ACTIVE` are eligible for JA matching — that quadruple filter is repeated in chat, commands, and reports; keep it consistent.
 3. **Chat** — `sendChatMessage` first tries `tryHandleChatCommand` (deterministic Thai commands: ช่วยเหลือ, counts, ดู TOR, ส่งออก PDF, ลบแชท, navigation…) *before* any AI call, then requires at least one active TOR topic, then calls `extractWork` and merges the result into the conversation's single `WorkDraft`. [src/server/services/chat-service.ts](src/server/services/chat-service.ts)
 4. **Draft completeness is decided server-side, not by the model.** `requiredFieldsForSubtype(workSubtype)` drives which fields are mandatory (`B_2_1`/`B_2_2` need `location`, `B_2_3` needs `relatedUnit`, `C_3_1` needs `location` + `competency`). The system prompts are deliberately short because of this — put new rules in [src/lib/validation/work.ts](src/lib/validation/work.ts), not in the prompt. Draft-only fields (`workSubtype`, `competency`, `eventDate`, `startTime`, `endTime`) are accumulated across turns inside `WorkDraft.confirmedFieldsJson`.
@@ -72,7 +74,11 @@ UI strings, AI replies, and error messages are Thai; identifiers and log events 
 
 ## Env
 
-[src/lib/env.ts](src/lib/env.ts) parses `process.env` at import and throws on invalid values. Most fields are optional so the Docker build can run with placeholders; use `requireDatabaseEnv()` / `requireOpenAiEnv()` at the point of use. `AUTH_SECRET` must be ≥32 chars. `POST /api/auth/mock` (the demo login) 404s unless `NODE_ENV=development`.
+[src/lib/env.ts](src/lib/env.ts) parses `process.env` at import and throws on invalid values, so a bad variable 500s every page rather than failing at the point of use — see [.env.example](.env.example) for the full list. Most fields are optional so a build can run with placeholders; use `requireDatabaseEnv()` / `requireOpenAiEnv()` where needed. `AUTH_SECRET` must be ≥32 chars.
+
+`STORAGE_DRIVER` picks the `objectStorage` implementation: `local` writes to `LOCAL_STORAGE_PATH`, `vercel-blob` needs `BLOB_READ_WRITE_TOKEN` and a **private** store. Serverless hosts have no durable filesystem, so `local` there breaks the retry path in `processTor` — the one place a stored file is read back in a later request.
+
+`POST /api/auth/mock` (the demo login) 404s unless `NODE_ENV=development`, or both `ALLOW_MOCK_LOGIN` and `MOCK_LOGIN_PASSWORD` are set. It signs in as the seeded ADMIN account; delete it once CMU OIDC is configured.
 
 ## UI
 
