@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { ChangeEvent, useRef, useState } from "react";
 
 import { currentBuddhistYear } from "@/lib/date";
+import { humanizeClientError, readJsonResponse } from "@/lib/http/client-json";
 
 function yearOptions(center: number) {
   return Array.from({ length: 7 }, (_, index) => center - 3 + index);
@@ -26,27 +27,27 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
       form.set("file", file);
       form.set("year", String(year));
       const uploadResponse = await fetch("/api/tor/upload", { method: "POST", body: form });
-      const uploadBody = await uploadResponse.json() as {
+      const uploadBody = await readJsonResponse<{
         data?: { id: string; year: number };
         error?: { message?: string };
-      };
+      }>(uploadResponse);
       if (!uploadResponse.ok || !uploadBody.data) {
         throw new Error(uploadBody.error?.message ?? "อัปโหลดไม่สำเร็จ");
       }
 
       setMessage({ type: "success", text: "อัปโหลดสำเร็จ กำลังอ่านข้อความจากเอกสาร…" });
       const processResponse = await fetch(`/api/tor/${uploadBody.data.id}/process`, { method: "POST" });
-      const processBody = await processResponse.json() as { error?: { message?: string } };
+      const processBody = await readJsonResponse<{ error?: { message?: string } }>(processResponse);
       if (!processResponse.ok) {
         throw new Error(processBody.error?.message ?? "ประมวลผลข้อความไม่สำเร็จ");
       }
 
       setMessage({ type: "success", text: "อ่านข้อความแล้ว กำลังวิเคราะห์หัวข้อด้วย AI…" });
       const analyzeResponse = await fetch(`/api/tor/${uploadBody.data.id}/analyze`, { method: "POST" });
-      const analyzeBody = await analyzeResponse.json() as {
+      const analyzeBody = await readJsonResponse<{
         data?: { topicCount: number };
         error?: { message?: string };
-      };
+      }>(analyzeResponse);
       if (!analyzeResponse.ok) {
         throw new Error(analyzeBody.error?.message ?? "วิเคราะห์หัวข้อไม่สำเร็จ");
       }
@@ -57,7 +58,10 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
       });
       router.refresh();
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "อัปโหลดไม่สำเร็จ" });
+      setMessage({
+        type: "error",
+        text: humanizeClientError(error, "อัปโหลดไม่สำเร็จ"),
+      });
       router.refresh();
     } finally {
       setUploading(false);
@@ -72,7 +76,7 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
         className="sr-only"
         id="tor-file"
         type="file"
-        accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        accept=".pdf,.docx"
         onChange={upload}
         disabled={uploading}
       />

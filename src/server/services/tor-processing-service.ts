@@ -1,15 +1,17 @@
 import "server-only";
 
 import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
 
 import { ApiError } from "@/lib/http/api-error";
+import { ensurePdfJsDomPolyfills } from "@/lib/pdf/dom-polyfill";
 import { extractTor } from "@/lib/openai/client";
 import { prisma } from "@/lib/prisma";
 import { objectStorage } from "@/lib/storage/provider";
 
 async function extractPages(mimeType: string, bytes: Uint8Array) {
   if (mimeType === "application/pdf") {
+    ensurePdfJsDomPolyfills();
+    const { PDFParse } = await import("pdf-parse");
     const parser = new PDFParse({ data: bytes });
     try {
       const result = await parser.getText();

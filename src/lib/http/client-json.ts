@@ -23,7 +23,7 @@ export function humanizeClientError(error: unknown, fallback: string) {
   if (!(error instanceof Error)) return fallback;
   const message = error.message.trim();
   if (/string did not match the expected pattern/i.test(message)) {
-    return "ข้อมูลที่ส่งไม่ถูกต้อง หรือเซิร์ฟเวอร์ตอบกลับผิดรูปแบบ — ตรวจ Base URL (ต้องขึ้นต้นด้วย https://) หรือลองเข้าสู่ระบบใหม่";
+    return "เซิร์ฟเวอร์ตอบกลับผิดรูปแบบ — ลองรีเฟรชหน้าหรือเข้าสู่ระบบใหม่";
   }
   return message || fallback;
 }
