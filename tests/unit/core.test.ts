@@ -189,6 +189,13 @@ describe("TORI core business rules", () => {
     // Decimal(6,2) คืนค่าเป็นสตริงที่มีศูนย์ต่อท้าย ต้องไม่โผล่ในฟอร์ม
     expect(sumJaHours([ja("6.00"), ja("2.00")])).toBe("8");
   });
+  it("counts a JA saved without a schedule as zero hours, not NaN", () => {
+    // totalHours เป็น null ได้แล้วเมื่อผู้ใช้บันทึกโดยไม่ระบุวันเวลา
+    // toJaEntry แปลงเป็น "ไม่ระบุ" ก่อนถึงคอลัมน์ชั่วโมงจริง
+    const ja = (totalHours: string) => ({ totalHours });
+    expect(sumJaHours([ja("ไม่ระบุ")])).toBe("0");
+    expect(sumJaHours([ja("7"), ja("ไม่ระบุ"), ja("1.5")])).toBe("8.5");
+  });
   it("matches the same TOR topic across a re-analysis despite whitespace drift", () => {
     const before = { kind: "TOPIC", code: "3.1", title: "การพัฒนาตนเอง  เช่น การอบรม" };
     const after = { kind: "TOPIC", code: " 3.1 ", title: " การพัฒนาตนเอง เช่น การอบรม " };
