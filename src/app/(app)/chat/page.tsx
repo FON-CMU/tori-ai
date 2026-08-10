@@ -1,12 +1,13 @@
 import { ChatWorkspace } from "@/components/chat/chat-workspace";
 import { requirePageSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
+import { getActiveTorYears } from "@/server/services/chat-service";
 import { getCurrentUserProfile } from "@/server/services/user-profile-service";
 
 export default async function ChatPage() {
   const session = await requirePageSession();
   const { userId } = session;
-  const [conversations, activeTorCount, profile] = await Promise.all([
+  const [conversations, activeTorCount, profile, torYears] = await Promise.all([
     prisma.conversation.findMany({
       where: { userId, status: { not: "ARCHIVED" } },
       orderBy: { updatedAt: "desc" },
@@ -23,11 +24,13 @@ export default async function ChatPage() {
       },
     }),
     getCurrentUserProfile(session),
+    getActiveTorYears(userId),
   ]);
 
   return (
     <ChatWorkspace
       hasActiveTor={activeTorCount > 0}
+      torYears={torYears}
       user={{
         displayName: profile.displayName,
         email: profile.email,

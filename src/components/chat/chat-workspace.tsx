@@ -38,6 +38,14 @@ type Draft = {
   readyToConfirm: boolean;
   scheduleSkipped?: boolean;
   canSaveAsIs?: boolean;
+  torYear?: number | null;
+  pendingTopicOptions?: Array<{
+    id: string;
+    title: string;
+    category: string;
+    categoryLabel: string;
+  }>;
+  allowDuplicateSave?: boolean;
 };
 
 const suggestions = [
@@ -78,10 +86,12 @@ function formatRelative(iso: string) {
 export function ChatWorkspace({
   conversations: initialConversations,
   hasActiveTor,
+  torYears: initialTorYears,
   user,
 }: {
   conversations: Conversation[];
   hasActiveTor: boolean;
+  torYears: number[];
   user: ChatUser;
 }) {
   const router = useRouter();
@@ -91,9 +101,12 @@ export function ChatWorkspace({
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [torYears, setTorYears] = useState(initialTorYears);
+  const [selectedTorYear, setSelectedTorYear] = useState<number | null>(initialTorYears[0] ?? null);
   const [busy, setBusy] = useState(false);
   const [replying, setReplying] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [duplicatePrompt, setDuplicatePrompt] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [waitingMs, setWaitingMs] = useState(0);
   const [, startTransition] = useTransition();
@@ -167,6 +180,8 @@ export function ChatWorkspace({
     setDraft(null);
     setInput("");
     setError(null);
+    setDuplicatePrompt(false);
+    setSelectedTorYear(torYears[0] ?? null);
     setSidebarOpen(false);
     textareaRef.current?.focus();
   }
@@ -236,6 +251,8 @@ export function ChatWorkspace({
       setConversationId(body.data.id);
       setMessages(body.data.messages);
       setDraft(body.data.draft);
+      setDuplicatePrompt(false);
+      if (body.data.draft?.torYear) setSelectedTorYear(body.data.draft.torYear);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "โหลดแชทไม่สำเร็จ");
     } finally {
@@ -269,6 +286,8 @@ export function ChatWorkspace({
           title: string | null;
           messages: Message[];
           draft: Draft | null;
+          torYears?: number[];
+          duplicatePrompt?: boolean;
           conversationDeleted?: boolean;
           actions?: Array<
             | { type: "navigate"; href: string }
@@ -282,6 +301,9 @@ export function ChatWorkspace({
       if (!response.ok || !body.data) throw new Error(body.error?.message ?? "ส่งข้อความไม่สำเร็จ");
 
       const actions = body.data.actions ?? [];
+      if (body.data.torYears?.length) setTorYears(body.data.torYears);
+      setDuplicatePrompt(Boolean(body.data.duplicatePrompt));
+      if (body.data.draft?.torYear) setSelectedTorYear(body.data.draft.torYear);
       if (body.data.conversationDeleted) {
         setConversations((current) => current.filter((item) => item.id !== body.data!.id));
         setMessages(body.data.messages);
@@ -326,7 +348,7 @@ export function ChatWorkspace({
     await sendMessage(input);
   }
 
-  async function confirmJa() {
+  async function confirmJa(allowDuplicate = false) {
     if (!conversationId || confirming) return;
     setConfirming(true);
     setError(null);
@@ -334,20 +356,62 @@ export function ChatWorkspace({
       const response = await fetch("/api/chat/confirm", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ conversationId }),
+        body: JSON.stringify({ conversationId, allowDuplicate }),
       });
       const body = await response.json() as {
         data?: { conversation: { messages: Message[]; draft: Draft | null }; ja: { runningNumber: string } };
-        error?: { message?: string };
+        error?: { message?: string; code?: string };
       };
-      if (!response.ok || !body.data) throw new Error(body.error?.message ?? "บันทึก JA ไม่สำเร็จ");
+      if (!response.ok || !body.data) {
+        if (body.error?.code === "DUPLICATE_JA") {
+          setDuplicatePrompt(true);
+          setError(body.error.message ?? "พบรายการใกล้เคียง");
+          return;
+        }
+        throw new Error(body.error?.message ?? "บันทึก JA ไม่สำเร็จ");
+      }
       setMessages(body.data.conversation.messages);
       setDraft(body.data.conversation.draft);
+      setDuplicatePrompt(false);
       startTransition(() => router.refresh());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "บันทึก JA ไม่สำเร็จ");
     } finally {
       setConfirming(false);
+    }
+  }
+
+  async function changeTorYear(year: number) {
+    if (busy || year === selectedTorYear) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/chat/tor-year", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ conversationId, year }),
+      });
+      const body = await response.json() as {
+        data?: { id: string; messages: Message[]; draft: Draft | null; torYears?: number[] };
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.data) throw new Error(body.error?.message ?? "เปลี่ยนปี TOR ไม่สำเร็จ");
+      setConversationId(body.data.id);
+      setMessages(body.data.messages);
+      setDraft(body.data.draft);
+      setSelectedTorYear(year);
+      if (body.data.torYears?.length) setTorYears(body.data.torYears);
+      setConversations((current) => {
+        const next = current.filter((item) => item.id !== body.data!.id);
+        return [
+          { id: body.data!.id, title: body.data!.draft?.workTitle ?? `TOR พ.ศ. ${year}`, updatedAt: new Date().toISOString() },
+          ...next,
+        ];
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "เปลี่ยนปี TOR ไม่สำเร็จ");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -626,15 +690,44 @@ export function ChatWorkspace({
                   </div>
                 ) : null}
 
+                {draft?.pendingTopicOptions && draft.pendingTopicOptions.length > 0 ? (
+                  <div className="rounded-[22px] border border-[var(--apple-line)] bg-white p-5 shadow-[0_4px_24px_rgba(0,0,0,0.04)]">
+                    <p className="text-[15px] font-semibold text-[var(--apple-ink)]">เลือกหัวข้อ TOR</p>
+                    <p className="mt-1 text-[13px] text-[var(--apple-muted)]">
+                      พบหัวข้อใกล้เคียงหลายรายการ — เลือกก่อนบันทึก จะไม่ทับรายการเดิม
+                    </p>
+                    <div className="mt-4 flex flex-col gap-2">
+                      {draft.pendingTopicOptions.map((option, index) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void sendMessage(String(index + 1))}
+                          className="rounded-2xl border border-[var(--apple-line)] px-4 py-3 text-left text-[14px] transition hover:bg-black/[0.03] disabled:opacity-50"
+                        >
+                          <span className="font-medium text-[var(--apple-blue)]">{index + 1}.</span>{" "}
+                          <span className="text-[var(--apple-muted)]">[{option.categoryLabel}]</span>{" "}
+                          {option.title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
                 {draft?.readyToConfirm ? (
                   <div className="rounded-[22px] border border-[var(--apple-line)] bg-white p-5 shadow-[0_4px_24px_rgba(0,0,0,0.04)]">
                     <p className="text-[15px] font-semibold text-[var(--apple-ink)]">
                       ร่างผลการปฏิบัติงานจริง (JA)
                     </p>
                     <p className="mt-1 text-[13px] text-[var(--apple-muted)]">
-                      จะถูกบันทึกฝั่งขวาของฟอร์ม TOR เมื่อยืนยัน
+                      จะถูกบันทึกฝั่งขวาของฟอร์ม TOR
+                      {draft.torYear ? ` ปี พ.ศ. ${draft.torYear}` : ""} เมื่อยืนยัน
                     </p>
                     <dl className="mt-4 space-y-2 text-[14px] text-[var(--apple-ink)]">
+                      <div className="flex gap-2">
+                        <dt className="w-36 shrink-0 text-[var(--apple-muted)]">ปี TOR</dt>
+                        <dd>{draft.torYear ?? "-"}</dd>
+                      </div>
                       <div className="flex gap-2">
                         <dt className="w-36 shrink-0 text-[var(--apple-muted)]">ชื่องาน</dt>
                         <dd>{draft.workTitle ?? "-"}</dd>
@@ -700,14 +793,38 @@ export function ChatWorkspace({
                         </div>
                       ) : null}
                     </dl>
-                    <button
-                      type="button"
-                      onClick={confirmJa}
-                      disabled={confirming}
-                      className="mt-5 rounded-full bg-[var(--apple-blue)] px-5 py-2.5 text-[14px] font-medium text-white transition hover:bg-[var(--apple-blue-hover)] disabled:opacity-50"
-                    >
-                      {confirming ? "กำลังบันทึก…" : "ยืนยันบันทึก JA"}
-                    </button>
+                    {duplicatePrompt ? (
+                      <div className="mt-5 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void confirmJa(true)}
+                          disabled={confirming}
+                          className="rounded-full bg-[var(--apple-blue)] px-5 py-2.5 text-[14px] font-medium text-white transition hover:bg-[var(--apple-blue-hover)] disabled:opacity-50"
+                        >
+                          {confirming ? "กำลังบันทึก…" : "บันทึกเป็นรายการใหม่"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDuplicatePrompt(false);
+                            setError(null);
+                          }}
+                          disabled={confirming}
+                          className="rounded-full bg-black/[0.06] px-5 py-2.5 text-[14px] font-medium text-[var(--apple-ink)] transition hover:bg-black/[0.09] disabled:opacity-50"
+                        >
+                          ไม่บันทึก
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void confirmJa(false)}
+                        disabled={confirming}
+                        className="mt-5 rounded-full bg-[var(--apple-blue)] px-5 py-2.5 text-[14px] font-medium text-white transition hover:bg-[var(--apple-blue-hover)] disabled:opacity-50"
+                      >
+                        {confirming ? "กำลังบันทึก…" : "ยืนยันบันทึก JA"}
+                      </button>
+                    )}
                   </div>
                 ) : null}
 
@@ -724,6 +841,29 @@ export function ChatWorkspace({
           <form onSubmit={submit} className="mx-auto max-w-[720px]">
             {error && messages.length === 0 ? (
               <p className="mb-2 rounded-[18px] bg-red-50 px-4 py-3 text-[14px] text-red-700">{error}</p>
+            ) : null}
+            {torYears.length > 0 ? (
+              <div className="mb-2 flex flex-wrap items-center gap-2 px-1">
+                <label className="text-[12px] text-[var(--apple-muted)]" htmlFor="tor-year-select">
+                  กรอกตาม TOR ปี
+                </label>
+                <select
+                  id="tor-year-select"
+                  value={selectedTorYear ?? ""}
+                  disabled={busy || !hasActiveTor}
+                  onChange={(event) => {
+                    const year = Number(event.target.value);
+                    if (Number.isInteger(year)) void changeTorYear(year);
+                  }}
+                  className="rounded-full border border-[var(--apple-line)] bg-white px-3 py-1.5 text-[13px] text-[var(--apple-ink)] outline-none disabled:opacity-50"
+                >
+                  {torYears.map((year) => (
+                    <option key={year} value={year}>
+                      พ.ศ. {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
             ) : null}
             <div className="rounded-[28px] border border-[var(--apple-line)] bg-white p-2 shadow-[0_12px_40px_rgba(0,0,0,0.06)] focus-within:border-[#b0b0b5] focus-within:shadow-[0_16px_48px_rgba(0,0,0,0.08)]">
               <textarea

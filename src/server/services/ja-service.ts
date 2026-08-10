@@ -4,7 +4,11 @@ import { ApiError } from "@/lib/http/api-error";
 import { prisma } from "@/lib/prisma";
 import { workInputSchema } from "@/lib/validation/work";
 
-export async function confirmJa(userId: string, raw: unknown) {
+export async function confirmJa(
+  userId: string,
+  raw: unknown,
+  options?: { allowDuplicate?: boolean },
+) {
   const input = workInputSchema.parse(raw);
   const topic = await prisma.torTopic.findFirst({
     where: {
@@ -47,7 +51,13 @@ export async function confirmJa(userId: string, raw: unknown) {
           status: { not: "ARCHIVED" },
         },
       });
-  if (duplicate) throw new ApiError(409, "DUPLICATE_JA", "พบรายการงานที่มีเวลาและหัวข้อเดียวกัน");
+  if (duplicate && !options?.allowDuplicate) {
+    throw new ApiError(
+      409,
+      "DUPLICATE_JA",
+      `พบรายการใกล้เคียงแล้ว (${duplicate.runningNumber}: ${duplicate.workTitle}) — กด “บันทึกเป็นรายการใหม่” หากต้องการบันทึกเพิ่ม โดยไม่ทับของเดิม หรือพิมพ์ “บันทึกใหม่”`,
+    );
+  }
 
   const yearAnchor = startAt ?? new Date();
   return prisma.$transaction(async (tx) => {

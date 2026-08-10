@@ -22,10 +22,14 @@ import {
   deriveWorkTitle,
   findMissingFields,
   inferCategoryFromWorkText,
+  isCategoryChangeIntent,
   isSaveAsIsIntent,
   isSkipScheduleIntent,
   onlyScheduleFieldsMissing,
   parseCategoryAnswer,
+  parseTorYearFromMessage,
+  parseTopicChoiceIndex,
+  selectTopicCandidates,
 } from "@/lib/validation/work";
 import { canReadJa } from "@/server/policies/ownership";
 
@@ -338,6 +342,24 @@ describe("TORI core business rules", () => {
     const merged = mergeTorExtractions([first, second]);
     expect(merged.topics.filter((topic) => topic.kind === "TOPIC")).toHaveLength(2);
     expect(merged.warnings).toEqual(["หน้า 1 ไม่ชัด"]);
+  });
+  it("detects category change intents and TOR year answers", () => {
+    expect(isCategoryChangeIntent("เปลี่ยนหมวดไปงานประจำ")).toBe(true);
+    expect(isCategoryChangeIntent("วันนี้ไปอบรม AI")).toBe(false);
+    expect(parseTorYearFromMessage("ใช้ TOR ปี 2569")).toBe(2569);
+    expect(parseTorYearFromMessage("พ.ศ. 2568")).toBe(2568);
+    expect(parseTopicChoiceIndex("2", 3)).toBe(1);
+    expect(parseTopicChoiceIndex("9", 3)).toBeNull();
+  });
+  it("asks for a choice when TOR topics are similarly scored", () => {
+    const topics = [
+      { id: "a", title: "การพัฒนาตนเอง เช่น อบรม", description: null },
+      { id: "b", title: "การพัฒนาตนเองและพัฒนางาน", description: null },
+      { id: "c", title: "งานธุรการประจำวัน", description: null },
+    ];
+    const chosen = selectTopicCandidates(topics, "อบรมพัฒนาตนเอง", "เข้าร่วมอบรมพัฒนาตนเอง");
+    expect(chosen.length).toBeGreaterThan(1);
+    expect(chosen.some((topic) => topic.id === "a" || topic.id === "b")).toBe(true);
   });
   it("detects natural-language JA count questions as data queries", () => {
     expect(isDataQueryIntent("ตอนนี้มีหัวข้อรายงาน ja กี่เรื่องแล้ว")).toBe(true);

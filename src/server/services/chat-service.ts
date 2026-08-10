@@ -28,10 +28,16 @@ import {
   findMissingFields,
   inferCategoryFromWorkText,
   inferSubtypeFromWorkText,
+  isCancelDuplicateIntent,
+  isCategoryChangeIntent,
   isSaveAsIsIntent,
+  isSaveDuplicateIntent,
   isSkipScheduleIntent,
   onlyScheduleFieldsMissing,
   parseCategoryAnswer,
+  parseTorYearFromMessage,
+  parseTopicChoiceIndex,
+  selectTopicCandidates,
 } from "@/lib/validation/work";
 import { resolveOpenAiSettings } from "@/server/services/ai-settings-service";
 import { tryHandleChatCommand } from "@/server/services/chat-command-service";
@@ -43,6 +49,13 @@ const categoryLabel = {
   DEVELOPMENT: "งานเชิงพัฒนา",
 } as const;
 
+type PendingTopicOption = {
+  id: string;
+  title: string;
+  category: string;
+  categoryLabel: string;
+};
+
 type DraftMeta = {
   workSubtype: WorkSubtype | null;
   competency: string | null;
@@ -50,6 +63,9 @@ type DraftMeta = {
   startTime: string | null;
   endTime: string | null;
   scheduleSkipped: boolean;
+  torYear: number | null;
+  pendingTopicOptions: PendingTopicOption[];
+  allowDuplicateSave: boolean;
 };
 
 function readDraftMeta(value: Prisma.JsonValue | null | undefined): DraftMeta {
@@ -61,12 +77,38 @@ function readDraftMeta(value: Prisma.JsonValue | null | undefined): DraftMeta {
       startTime: null,
       endTime: null,
       scheduleSkipped: false,
+      torYear: null,
+      pendingTopicOptions: [],
+      allowDuplicateSave: false,
     };
   }
   const record = value as Record<string, unknown>;
   const subtypeParse = workSubtypeSchema.safeParse(record.workSubtype);
   const asText = (key: string) =>
     typeof record[key] === "string" && record[key].trim() ? (record[key] as string).trim() : null;
+  const torYear =
+    typeof record.torYear === "number" && Number.isInteger(record.torYear)
+      ? record.torYear
+      : typeof record.torYear === "string" && /^\d{4}$/.test(record.torYear)
+        ? Number(record.torYear)
+        : null;
+  const pendingTopicOptions = Array.isArray(record.pendingTopicOptions)
+    ? record.pendingTopicOptions.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const row = item as Record<string, unknown>;
+        if (typeof row.id !== "string" || typeof row.title !== "string") return [];
+        const category = typeof row.category === "string" ? row.category : "";
+        return [{
+          id: row.id,
+          title: row.title,
+          category,
+          categoryLabel:
+            typeof row.categoryLabel === "string"
+              ? row.categoryLabel
+              : categoryLabel[category as keyof typeof categoryLabel] ?? category,
+        }];
+      })
+    : [];
   return {
     workSubtype: subtypeParse.success ? subtypeParse.data : null,
     competency: asText("competency"),
@@ -74,6 +116,9 @@ function readDraftMeta(value: Prisma.JsonValue | null | undefined): DraftMeta {
     startTime: normalizeTimeHm(asText("startTime")),
     endTime: normalizeTimeHm(asText("endTime")),
     scheduleSkipped: record.scheduleSkipped === true,
+    torYear,
+    pendingTopicOptions,
+    allowDuplicateSave: record.allowDuplicateSave === true,
   };
 }
 
@@ -291,14 +336,116 @@ function buildReviewMessage(input: {
   return lines.join("\n");
 }
 
-async function loadActiveTopics(userId: string) {
+async function listActiveTorYears(userId: string) {
+  const rows = await prisma.torDocument.groupBy({
+    by: ["year"],
+    where: {
+      userId,
+      status: "ACTIVE",
+      topics: { some: { status: "CONFIRMED", matchable: true, kind: "TOPIC" } },
+    },
+    orderBy: { year: "desc" },
+  });
+  return rows.map((row) => row.year);
+}
+
+export async function getActiveTorYears(userId: string) {
+  return listActiveTorYears(userId);
+}
+
+export async function setChatTorYear(userId: string, conversationId: string | null, year: number) {
+  const resolved = await resolveTorYear(userId, year);
+  if (!resolved.year || !resolved.years.includes(year)) {
+    throw new ApiError(400, "INVALID_TOR_YEAR", "ไม่พบ TOR ปีที่เลือก หรือยังไม่ได้วิเคราะห์หัวข้อ");
+  }
+
+  let id = conversationId;
+  if (id) {
+    const existing = await prisma.conversation.findFirst({
+      where: { id, userId, status: { not: "ARCHIVED" } },
+    });
+    if (!existing) throw new ApiError(404, "CONVERSATION_NOT_FOUND", "ไม่พบการสนทนา");
+  } else {
+    const created = await prisma.conversation.create({
+      data: {
+        userId,
+        title: `TOR พ.ศ. ${year}`,
+        status: "ACTIVE",
+        workDraft: {
+          create: {
+            userId,
+            status: "COLLECTING",
+            confirmedFieldsJson: { torYear: year },
+          },
+        },
+      },
+    });
+    id = created.id;
+  }
+
+  const draft = await prisma.workDraft.upsert({
+    where: { conversationId: id },
+    update: {},
+    create: {
+      conversationId: id,
+      userId,
+      status: "COLLECTING",
+      confirmedFieldsJson: { torYear: year },
+    },
+  });
+  const meta = readDraftMeta(draft.confirmedFieldsJson);
+  await prisma.workDraft.update({
+    where: { id: draft.id },
+    data: {
+      torTopicId: null,
+      confirmedFieldsJson: {
+        ...meta,
+        torYear: year,
+        pendingTopicOptions: [],
+        allowDuplicateSave: false,
+      },
+    },
+  });
+  await prisma.message.create({
+    data: {
+      conversationId: id,
+      role: "ASSISTANT",
+      content: `ใช้ TOR ปี พ.ศ. ${year} สำหรับการบันทึก JA ในแชทนี้แล้ว`,
+    },
+  });
+  await prisma.conversation.update({ where: { id }, data: { updatedAt: new Date() } });
+  const topics = await loadActiveTopics(userId, year);
+  return {
+    ...(await getConversation(userId, id)),
+    torYears: resolved.years,
+    topics: topics.map((topic) => ({
+      id: topic.id,
+      category: topic.category,
+      categoryLabel: categoryLabel[topic.category],
+      title: topic.title,
+      year: topic.torDocument.year,
+    })),
+  };
+}
+
+async function resolveTorYear(userId: string, preferred: number | null | undefined) {
+  const years = await listActiveTorYears(userId);
+  if (!years.length) return { year: null as number | null, years };
+  if (preferred && years.includes(preferred)) return { year: preferred, years };
+  return { year: years[0] ?? null, years };
+}
+
+async function loadActiveTopics(userId: string, year?: number | null) {
   return prisma.torTopic.findMany({
     where: {
       userId,
       status: "CONFIRMED",
       matchable: true,
       kind: "TOPIC",
-      torDocument: { status: "ACTIVE" },
+      torDocument: {
+        status: "ACTIVE",
+        ...(year ? { year } : {}),
+      },
     },
     orderBy: [{ sortOrder: "asc" }, { category: "asc" }, { title: "asc" }],
     select: {
@@ -312,6 +459,41 @@ async function loadActiveTopics(userId: string) {
       torDocument: { select: { id: true, year: true, fileName: true } },
     },
   });
+}
+
+function applyTopicSelection(
+  topics: Awaited<ReturnType<typeof loadActiveTopics>>,
+  category: string | null,
+  workTitle: string | null,
+  description: string | null,
+  currentTopicId: string | null,
+) {
+  const inCategory = category
+    ? topics.filter((topic) => topic.category === category)
+    : topics;
+  const pool = inCategory.length ? inCategory : topics;
+  if (!pool.length) {
+    return { torTopicId: null as string | null, pendingTopicOptions: [] as PendingTopicOption[] };
+  }
+  if (currentTopicId && pool.some((topic) => topic.id === currentTopicId)) {
+    return { torTopicId: currentTopicId, pendingTopicOptions: [] as PendingTopicOption[] };
+  }
+  const candidates = selectTopicCandidates(pool, workTitle, description);
+  if (candidates.length <= 1) {
+    return {
+      torTopicId: candidates[0]?.id ?? pool[0]?.id ?? null,
+      pendingTopicOptions: [] as PendingTopicOption[],
+    };
+  }
+  return {
+    torTopicId: null as string | null,
+    pendingTopicOptions: candidates.map((topic) => ({
+      id: topic.id,
+      title: topic.title,
+      category: topic.category,
+      categoryLabel: categoryLabel[topic.category],
+    })),
+  };
 }
 
 function serializeDraft(draft: {
@@ -359,11 +541,17 @@ function serializeDraft(draft: {
     missingFields: missing,
     aiConfidence: draft.aiConfidence,
     scheduleSkipped: meta.scheduleSkipped,
+    torYear: meta.torYear,
+    pendingTopicOptions: meta.pendingTopicOptions,
+    allowDuplicateSave: meta.allowDuplicateSave,
     canSaveAsIs:
       draft.status !== "READY_FOR_REVIEW"
       && Boolean(draft.workTitle || draft.description)
       && onlyScheduleFieldsMissing(missing),
-    readyToConfirm: draft.status === "READY_FOR_REVIEW" && missing.length === 0,
+    readyToConfirm:
+      draft.status === "READY_FOR_REVIEW"
+      && missing.length === 0
+      && meta.pendingTopicOptions.length === 0,
   };
 }
 
@@ -493,8 +681,8 @@ export async function sendChatMessage(
     };
   }
 
-  const topics = await loadActiveTopics(userId);
-  if (!topics.length) {
+  const yearResolution = await resolveTorYear(userId, null);
+  if (!yearResolution.years.length) {
     throw new ApiError(
       409,
       "TOR_REQUIRED",
@@ -533,7 +721,13 @@ export async function sendChatMessage(
         title: content.slice(0, 60),
         status: "ACTIVE",
         aiModel: selectedModel,
-        workDraft: { create: { userId, status: "COLLECTING" } },
+        workDraft: {
+          create: {
+            userId,
+            status: "COLLECTING",
+            confirmedFieldsJson: { torYear: yearResolution.year },
+          },
+        },
       },
     });
     conversationId = created.id;
@@ -542,10 +736,196 @@ export async function sendChatMessage(
   const draft = await prisma.workDraft.upsert({
     where: { conversationId },
     update: {},
-    create: { conversationId, userId, status: "COLLECTING" },
+    create: {
+      conversationId,
+      userId,
+      status: "COLLECTING",
+      confirmedFieldsJson: { torYear: yearResolution.year },
+    },
     include: { torTopic: { select: { title: true, category: true } } },
   });
-  const existingMeta = readDraftMeta(draft.confirmedFieldsJson);
+  let existingMeta = readDraftMeta(draft.confirmedFieldsJson);
+  const requestedYear = parseTorYearFromMessage(content);
+  const resolvedYear = await resolveTorYear(userId, requestedYear ?? existingMeta.torYear ?? yearResolution.year);
+  existingMeta = {
+    ...existingMeta,
+    torYear: resolvedYear.year,
+    pendingTopicOptions: requestedYear && requestedYear !== existingMeta.torYear
+      ? []
+      : existingMeta.pendingTopicOptions,
+  };
+  const topics = await loadActiveTopics(userId, resolvedYear.year);
+  if (!topics.length) {
+    throw new ApiError(
+      409,
+      "TOR_REQUIRED",
+      resolvedYear.year
+        ? `ยังไม่มีหัวข้อ TOR ปี พ.ศ. ${resolvedYear.year} ที่พร้อมใช้งาน`
+        : "ยังไม่มี TOR ที่พร้อมใช้งาน กรุณาอัปโหลด TOR ในหน้าตั้งค่าก่อน",
+    );
+  }
+
+  // เลือกหัวข้อจากตัวเลือกที่ถามไว้
+  if (existingMeta.pendingTopicOptions.length) {
+    const choiceIndex = parseTopicChoiceIndex(content, existingMeta.pendingTopicOptions.length);
+    const byTitle = existingMeta.pendingTopicOptions.find((option) =>
+      content.includes(option.title.slice(0, Math.min(16, option.title.length))),
+    );
+    const chosen = choiceIndex !== null
+      ? existingMeta.pendingTopicOptions[choiceIndex]
+      : byTitle;
+    if (chosen) {
+      await prisma.message.create({ data: { conversationId, role: "USER", content } });
+      const nextMeta: DraftMeta = {
+        ...existingMeta,
+        pendingTopicOptions: [],
+        allowDuplicateSave: false,
+      };
+      const missing = findMissingFields(
+        draftFieldValues({ ...draft, torTopicId: chosen.id, category: chosen.category as typeof draft.category }, nextMeta),
+        nextMeta.workSubtype,
+        { scheduleOptional: nextMeta.scheduleSkipped },
+      );
+      const ready = missing.length === 0;
+      await prisma.workDraft.update({
+        where: { id: draft.id },
+        data: {
+          torTopicId: chosen.id,
+          category: chosen.category as "ROUTINE" | "ASSIGNED" | "DEVELOPMENT",
+          status: ready ? "READY_FOR_REVIEW" : "COLLECTING",
+          missingFieldsJson: missing,
+          confirmedFieldsJson: nextMeta,
+        },
+      });
+      await prisma.message.create({
+        data: {
+          conversationId,
+          role: "ASSISTANT",
+          content: ready
+            ? buildReviewMessage({
+                workTitle: draft.workTitle,
+                category: chosen.category,
+                workSubtype: nextMeta.workSubtype,
+                topicTitle: chosen.title,
+                description: draft.description,
+                location: draft.location,
+                relatedUnit: draft.relatedUnit,
+                competency: nextMeta.competency,
+                startAt: draft.startAt,
+                endAt: draft.endAt,
+                totalHours: draft.totalHours === null ? null : Number(draft.totalHours),
+                result: draft.result,
+                scheduleSkipped: nextMeta.scheduleSkipped,
+              })
+            : `รับทราบ ใช้หัวข้อ TOR “${chosen.title}” แล้ว\n\n${
+                buildMissingFieldQuestion(missing, {
+                  ...nextMeta,
+                  category: chosen.category,
+                  topicCountForCategory: topics.filter((topic) => topic.category === chosen.category).length,
+                  totalTopicCount: topics.length,
+                  hasDraftSubstance: true,
+                }) ?? "กรุณาให้ข้อมูลที่ยังขาดต่อได้เลย"
+              }`,
+        },
+      });
+      await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+      return {
+        ...(await getConversation(userId, conversationId)),
+        torYears: resolvedYear.years,
+        topics: topics.map((topic) => ({
+          id: topic.id,
+          category: topic.category,
+          categoryLabel: categoryLabel[topic.category],
+          title: topic.title,
+          year: topic.torDocument.year,
+        })),
+      };
+    }
+  }
+
+  // บันทึกใหม่เมื่อพบรายการซ้ำ / ยกเลิก
+  if (isSaveDuplicateIntent(content) && draft.status === "READY_FOR_REVIEW") {
+    await prisma.message.create({ data: { conversationId, role: "USER", content } });
+    await prisma.workDraft.update({
+      where: { id: draft.id },
+      data: { confirmedFieldsJson: { ...existingMeta, allowDuplicateSave: true } },
+    });
+    try {
+      const confirmed = await confirmChatDraft(userId, conversationId, { allowDuplicate: true });
+      return {
+        ...confirmed.conversation,
+        ja: confirmed.ja,
+        torYears: resolvedYear.years,
+        topics: topics.map((topic) => ({
+          id: topic.id,
+          category: topic.category,
+          categoryLabel: categoryLabel[topic.category],
+          title: topic.title,
+          year: topic.torDocument.year,
+        })),
+      };
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw error;
+    }
+  }
+  if (isCancelDuplicateIntent(content)) {
+    await prisma.message.create({ data: { conversationId, role: "USER", content } });
+    await prisma.message.create({
+      data: {
+        conversationId,
+        role: "ASSISTANT",
+        content: "ยกเลิกการบันทึกแล้ว ร่างเดิมยังอยู่ หากต้องการแก้รายละเอียด พิมพ์ต่อได้เลย",
+      },
+    });
+    await prisma.workDraft.update({
+      where: { id: draft.id },
+      data: { confirmedFieldsJson: { ...existingMeta, allowDuplicateSave: false } },
+    });
+    return {
+      ...(await getConversation(userId, conversationId)),
+      torYears: resolvedYear.years,
+    };
+  }
+
+  // เปลี่ยนปี TOR จากข้อความ
+  if (requestedYear && resolvedYear.year === requestedYear) {
+    const yearChanged = requestedYear !== readDraftMeta(draft.confirmedFieldsJson).torYear;
+    if (yearChanged && /ปี|TOR|พ\.?\s*ศ/i.test(content) && content.length < 40) {
+      await prisma.message.create({ data: { conversationId, role: "USER", content } });
+      await prisma.workDraft.update({
+        where: { id: draft.id },
+        data: {
+          torTopicId: null,
+          confirmedFieldsJson: {
+            ...existingMeta,
+            torYear: requestedYear,
+            pendingTopicOptions: [],
+            workSubtype: existingMeta.workSubtype,
+          },
+        },
+      });
+      await prisma.message.create({
+        data: {
+          conversationId,
+          role: "ASSISTANT",
+          content: `เปลี่ยนไปใช้ TOR ปี พ.ศ. ${requestedYear} แล้ว มีหัวข้อ ${topics.length} รายการ พร้อมให้บันทึก JA ได้เลย`,
+        },
+      });
+      await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+      return {
+        ...(await getConversation(userId, conversationId)),
+        torYears: resolvedYear.years,
+        topics: topics.map((topic) => ({
+          id: topic.id,
+          category: topic.category,
+          categoryLabel: categoryLabel[topic.category],
+          title: topic.title,
+          year: topic.torDocument.year,
+        })),
+      };
+    }
+  }
 
   const draftMissing = findMissingFields(
     draftFieldValues(draft, existingMeta),
@@ -555,20 +935,43 @@ export async function sendChatMessage(
   if (
     draft.status === "READY_FOR_REVIEW"
     && draftMissing.length === 0
+    && existingMeta.pendingTopicOptions.length === 0
     && (isConfirmIntent(content) || isSaveAsIsIntent(content))
   ) {
     await prisma.message.create({ data: { conversationId, role: "USER", content } });
-    const confirmed = await confirmChatDraft(userId, conversationId);
-    return {
-      ...confirmed.conversation,
-      ja: confirmed.ja,
-      topics: topics.map((topic) => ({
-        id: topic.id,
-        category: topic.category,
-        categoryLabel: categoryLabel[topic.category],
-        title: topic.title,
-      })),
-    };
+    try {
+      const confirmed = await confirmChatDraft(userId, conversationId, {
+        allowDuplicate: existingMeta.allowDuplicateSave,
+      });
+      return {
+        ...confirmed.conversation,
+        ja: confirmed.ja,
+        torYears: resolvedYear.years,
+        topics: topics.map((topic) => ({
+          id: topic.id,
+          category: topic.category,
+          categoryLabel: categoryLabel[topic.category],
+          title: topic.title,
+          year: topic.torDocument.year,
+        })),
+      };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "DUPLICATE_JA") {
+        await prisma.message.create({
+          data: {
+            conversationId,
+            role: "ASSISTANT",
+            content: `${error.message}\n\nพิมพ์ “บันทึกใหม่” เพื่อบันทึกเป็นรายการใหม่ (ไม่ทับของเดิม) หรือ “ยกเลิก”`,
+          },
+        });
+        return {
+          ...(await getConversation(userId, conversationId)),
+          torYears: resolvedYear.years,
+          duplicatePrompt: true,
+        };
+      }
+      throw error;
+    }
   }
 
   await prisma.message.create({
@@ -607,9 +1010,16 @@ export async function sendChatMessage(
       totalHours: null as Prisma.Decimal | null,
       result: draft.result ?? draft.description,
     };
-    if (skipDraft.category && (!skipDraft.torTopicId || !topics.some((topic) => topic.id === skipDraft.torTopicId))) {
-      const inCategory = topics.filter((topic) => topic.category === skipDraft.category);
-      skipDraft.torTopicId = inCategory[0]?.id ?? null;
+    if (skipDraft.category && (!skipDraft.torTopicId || !topics.some((topic) => topic.id === skipDraft.torTopicId && topic.category === skipDraft.category))) {
+      const picked = applyTopicSelection(
+        topics,
+        skipDraft.category,
+        skipDraft.workTitle,
+        skipDraft.description,
+        null,
+      );
+      skipDraft.torTopicId = picked.torTopicId;
+      skipMeta.pendingTopicOptions = picked.pendingTopicOptions;
     }
     if (!skipMeta.workSubtype && skipDraft.category) {
       skipMeta.workSubtype = inferSubtypeFromWorkText(
@@ -626,7 +1036,7 @@ export async function sendChatMessage(
       skipMeta.workSubtype,
       { scheduleOptional: true },
     );
-    const ready = missing.length === 0;
+    const ready = missing.length === 0 && skipMeta.pendingTopicOptions.length === 0;
     await prisma.workDraft.update({
       where: { id: draft.id },
       data: {
@@ -818,6 +1228,7 @@ export async function sendChatMessage(
 
   const schedule = mergeScheduleMeta(existingMeta, extraction, content);
   const answeredCategory = parseCategoryAnswer(content);
+  const categoryChange = isCategoryChangeIntent(content);
   const inferredCategory = inferCategoryFromWorkText(
     [content, extraction.description, draft.description].filter(Boolean).join(" "),
   );
@@ -828,23 +1239,47 @@ export async function sendChatMessage(
     && schedule.endTime,
   ) || Boolean(extraction.startAt && extraction.endAt);
 
+  let nextCategory =
+    (categoryChange ? answeredCategory : null)
+    ?? answeredCategory
+    ?? (categoryChange ? null : extraction.category)
+    ?? draft.category
+    ?? inferredCategory;
+
+  // คำสั่งเปลี่ยนหมวด: บังคับใช้หมวดที่ผู้ใช้บอก ไม่ให้ AI ยึดค่าเดิม
+  if (categoryChange && answeredCategory) {
+    nextCategory = answeredCategory;
+  }
+
+  const categoryChanged =
+    Boolean(nextCategory)
+    && Boolean(draft.category)
+    && nextCategory !== draft.category;
+
   const nextMeta: DraftMeta = {
-    workSubtype: extraction.workSubtype ?? existingMeta.workSubtype,
+    workSubtype:
+      categoryChanged || categoryChange
+        ? (extraction.workSubtype ?? null)
+        : (extraction.workSubtype ?? existingMeta.workSubtype),
     competency: firstNonNull(extraction.competency, existingMeta.competency),
     eventDate: normalizeEventDate(schedule.eventDate),
     startTime: schedule.startTime,
     endTime: schedule.endTime,
     scheduleSkipped: providedConcreteSchedule ? false : skipSchedule,
+    torYear: existingMeta.torYear ?? resolvedYear.year,
+    pendingTopicOptions: [],
+    allowDuplicateSave: false,
   };
 
   const nextDraft = {
     workTitle: extraction.workTitle ?? draft.workTitle,
-    category:
-      answeredCategory
-      ?? extraction.category
-      ?? draft.category
-      ?? inferredCategory,
-    torTopicId: extraction.torTopicId ?? draft.torTopicId,
+    category: nextCategory,
+    torTopicId:
+      categoryChanged || categoryChange
+        ? null
+        : (extraction.torTopicId && topics.some((topic) => topic.id === extraction.torTopicId)
+            ? extraction.torTopicId
+            : draft.torTopicId),
     description: extraction.description ?? draft.description,
     relatedUnit: extraction.relatedUnit ?? draft.relatedUnit,
     location: extraction.location ?? draft.location,
@@ -888,25 +1323,30 @@ export async function sendChatMessage(
     nextDraft.endAt = resolved.endAt;
   }
 
-  if (!nextMeta.workSubtype) {
+  if (!nextMeta.workSubtype || categoryChanged || categoryChange) {
     nextMeta.workSubtype = inferSubtypeFromWorkText(
       [content, nextDraft.description, nextDraft.workTitle].filter(Boolean).join(" "),
       nextDraft.category,
     );
   }
 
-  if (nextDraft.category && (!nextDraft.torTopicId || !topics.some((topic) => topic.id === nextDraft.torTopicId))) {
-    const inCategory = topics.filter((topic) => topic.category === nextDraft.category);
-    const matched =
-      inCategory.find((topic) =>
-        nextDraft.workTitle && topic.title.includes(nextDraft.workTitle.slice(0, 20))
-      )
-      ?? inCategory.find((topic) =>
-        nextDraft.description && topic.title.length > 0 && nextDraft.description.includes(topic.title)
-      )
-      ?? inCategory[0]
-      ?? null;
-    nextDraft.torTopicId = matched?.id ?? null;
+  const topicStillValid =
+    nextDraft.torTopicId
+    && topics.some(
+      (topic) =>
+        topic.id === nextDraft.torTopicId
+        && (!nextDraft.category || topic.category === nextDraft.category),
+    );
+  if (!topicStillValid) {
+    const picked = applyTopicSelection(
+      topics,
+      nextDraft.category,
+      nextDraft.workTitle,
+      nextDraft.description,
+      null,
+    );
+    nextDraft.torTopicId = picked.torTopicId;
+    nextMeta.pendingTopicOptions = picked.pendingTopicOptions;
   }
 
   if (!nextMeta.scheduleSkipped && nextDraft.startAt && nextDraft.endAt && nextDraft.totalHours === null) {
@@ -926,7 +1366,11 @@ export async function sendChatMessage(
     nextMeta.workSubtype,
     { scheduleOptional: nextMeta.scheduleSkipped },
   );
-  const ready = missing.length === 0;
+  const awaitingTopicChoice = nextMeta.pendingTopicOptions.length > 0;
+  if (awaitingTopicChoice && !missing.includes("torTopicId")) {
+    missing.push("torTopicId");
+  }
+  const ready = missing.length === 0 && !awaitingTopicChoice;
   const topicTitle = nextDraft.torTopicId
     ? topics.find((topic) => topic.id === nextDraft.torTopicId)?.title ?? null
     : null;
@@ -946,7 +1390,38 @@ export async function sendChatMessage(
     include: { torTopic: { select: { title: true, category: true } } },
   });
 
-  const reply = ready
+  const topicChoicePrompt = awaitingTopicChoice
+    ? [
+        categoryChanged || categoryChange
+          ? `เปลี่ยนหมวดเป็น${nextDraft.category ? categoryLabel[nextDraft.category] : "ที่เลือก"} แล้ว พบหัวข้อ TOR ที่ใกล้เคียงหลายรายการในปี พ.ศ. ${nextMeta.torYear ?? "-"}:`
+          : `พบหัวข้อ TOR ที่ใกล้เคียงหลายรายการในปี พ.ศ. ${nextMeta.torYear ?? "-"}:`,
+        ...nextMeta.pendingTopicOptions.map(
+          (option, index) => `${index + 1}) [${option.categoryLabel}] ${option.title}`,
+        ),
+        "",
+        "พิมพ์หมายเลขหัวข้อที่ต้องการใช้ (เช่น 1) — จะไม่ทับรายการเดิมจนกว่าคุณจะยืนยันบันทึก",
+      ].join("\n")
+    : null;
+
+  const reply = topicChoicePrompt
+    ? composeCollectingReply({
+        acknowledgement: buildDraftProgressAck({
+          workTitle: updatedDraft.workTitle,
+          category: updatedDraft.category,
+          workSubtype: nextMeta.workSubtype,
+          description: updatedDraft.description,
+          location: updatedDraft.location,
+          relatedUnit: updatedDraft.relatedUnit,
+          competency: nextMeta.competency,
+          result: updatedDraft.result,
+          userMessage: content,
+          eventDate: nextMeta.eventDate,
+        }),
+        question: topicChoicePrompt,
+        aiReply: null,
+        fallback: topicChoicePrompt,
+      })
+    : ready
     ? buildReviewMessage({
         workTitle: updatedDraft.workTitle,
         category: updatedDraft.category,
@@ -1018,16 +1493,22 @@ export async function sendChatMessage(
   const conversation = await getConversation(userId, conversationId);
   return {
     ...conversation,
+    torYears: resolvedYear.years,
     topics: topics.map((topic) => ({
       id: topic.id,
       category: topic.category,
       categoryLabel: categoryLabel[topic.category],
       title: topic.title,
+      year: topic.torDocument.year,
     })),
   };
 }
 
-export async function confirmChatDraft(userId: string, conversationId: string) {
+export async function confirmChatDraft(
+  userId: string,
+  conversationId: string,
+  options?: { allowDuplicate?: boolean },
+) {
   const conversation = await prisma.conversation.findFirst({
     where: { id: conversationId, userId },
     include: { workDraft: { include: { torTopic: { select: { title: true, category: true } } } } },
@@ -1035,6 +1516,9 @@ export async function confirmChatDraft(userId: string, conversationId: string) {
   if (!conversation?.workDraft) throw new ApiError(404, "DRAFT_NOT_FOUND", "ไม่พบร่างงาน");
   const draft = conversation.workDraft;
   const meta = readDraftMeta(draft.confirmedFieldsJson);
+  if (meta.pendingTopicOptions.length) {
+    throw new ApiError(409, "TOPIC_CHOICE_REQUIRED", "กรุณาเลือกหัวข้อ TOR จากตัวเลือกก่อนยืนยัน");
+  }
   if (draft.status !== "READY_FOR_REVIEW") {
     throw new ApiError(409, "DRAFT_INCOMPLETE", "ข้อมูลยังไม่ครบ กรุณาตอบคำถามเพิ่มก่อนยืนยัน");
   }
@@ -1060,19 +1544,23 @@ export async function confirmChatDraft(userId: string, conversationId: string) {
     ? `${draft.result}\nความรู้/ทักษะ/สมรรถนะที่ได้รับ: ${meta.competency}`
     : draft.result;
 
-  const record = await confirmJa(userId, {
-    workTitle: draft.workTitle,
-    category: draft.category,
-    torTopicId: draft.torTopicId,
-    description: draft.description,
-    relatedUnit: draft.relatedUnit ?? undefined,
-    location: draft.location ?? undefined,
-    startAt: draft.startAt,
-    endAt: draft.endAt,
-    totalHours: draft.totalHours === null ? null : Number(draft.totalHours),
-    result: resultWithCompetency,
-    scheduleSkipped: meta.scheduleSkipped,
-  });
+  const record = await confirmJa(
+    userId,
+    {
+      workTitle: draft.workTitle,
+      category: draft.category,
+      torTopicId: draft.torTopicId,
+      description: draft.description,
+      relatedUnit: draft.relatedUnit ?? undefined,
+      location: draft.location ?? undefined,
+      startAt: draft.startAt,
+      endAt: draft.endAt,
+      totalHours: draft.totalHours === null ? null : Number(draft.totalHours),
+      result: resultWithCompetency,
+      scheduleSkipped: meta.scheduleSkipped,
+    },
+    { allowDuplicate: options?.allowDuplicate || meta.allowDuplicateSave },
+  );
 
   await prisma.jaRecord.update({
     where: { id: record.id },
@@ -1094,7 +1582,7 @@ export async function confirmChatDraft(userId: string, conversationId: string) {
       totalHours: null,
       result: null,
       missingFieldsJson: [],
-      confirmedFieldsJson: {},
+      confirmedFieldsJson: meta.torYear ? { torYear: meta.torYear } : {},
       aiConfidence: null,
     },
   });

@@ -138,6 +138,99 @@ export function onlyScheduleFieldsMissing(missing: string[]) {
   );
 }
 
+/** ผู้ใช้ต้องการเปลี่ยนหมวดของร่างที่มีอยู่ */
+export function isCategoryChangeIntent(message: string) {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  return (
+    /เปลี่ยน\s*หมวด|ย้าย\s*(?:ไป\s*)?หมวด|แก้\s*หมวด|ปรับ\s*หมวด/.test(text)
+    || /หมวด(?:นี้)?(?:เป็น|ไป(?:เป็น)?|คือ)/.test(text)
+    || /เปลี่ยนเป็น(?:หมวด)?(?:งาน)?(?:ประจำ|มอบหมาย|เชิงพัฒนา)/.test(text)
+  );
+}
+
+/** ดึงปี พ.ศ. ของ TOR จากข้อความ */
+export function parseTorYearFromMessage(message: string) {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  const patterns = [
+    /(?:ใช้|เลือก|เปลี่ยน)?(?:ปี|TOR)\s*(?:พ\.?\s*ศ\.?\s*)?(\d{4})/i,
+    /พ\.?\s*ศ\.?\s*(\d{4})/i,
+    /^(\d{4})$/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+    const year = Number(match[1]);
+    if (year >= 2500 && year <= 2700) return year;
+    if (year >= 2000 && year <= 2100) return year + 543;
+  }
+  return null;
+}
+
+export function isSaveDuplicateIntent(message: string) {
+  const compact = message.trim().toLowerCase().replace(/\s+/g, "");
+  return /^(บันทึกใหม่|บันทึกเป็นรายการใหม่|สร้างใหม่|ยืนยันบันทึกใหม่|saveasnew|save.?new)[!。.]*$/.test(
+    compact,
+  ) || /บันทึก(?:เป็น)?(?:รายการ)?ใหม่/.test(message);
+}
+
+export function isCancelDuplicateIntent(message: string) {
+  const compact = message.trim().toLowerCase().replace(/\s+/g, "");
+  return /^(ยกเลิก|ไม่บันทึก|ไม่เอา|cancel)[!。.]*$/.test(compact);
+}
+
+/** เลือกหมายเลขตัวเลือกหัวข้อ เช่น "1" / "หัวข้อ 2" */
+export function parseTopicChoiceIndex(message: string, optionCount: number) {
+  if (optionCount <= 0) return null;
+  const text = message.replace(/\s+/g, " ").trim();
+  const match =
+    text.match(/^(?:เลือก\s*)?(?:หัวข้อ\s*)?(\d{1,2})(?:\s*[).）])?$/)
+    ?? text.match(/^(\d{1,2})$/);
+  if (!match?.[1]) return null;
+  const index = Number(match[1]);
+  if (!Number.isInteger(index) || index < 1 || index > optionCount) return null;
+  return index - 1;
+}
+
+export function scoreTorTopicMatch(
+  topic: { title: string; description?: string | null },
+  workTitle: string | null,
+  description: string | null,
+) {
+  const hay = `${topic.title} ${topic.description ?? ""}`.toLowerCase().replace(/\s+/g, " ");
+  let score = 0;
+  for (const raw of [workTitle, description]) {
+    if (!raw?.trim()) continue;
+    const needle = raw.toLowerCase().replace(/\s+/g, " ").trim();
+    if (hay.includes(needle.slice(0, Math.min(24, needle.length)))) score += 4;
+    if (needle.includes(topic.title.toLowerCase().slice(0, Math.min(20, topic.title.length)))) score += 5;
+    for (const word of needle.split(" ").filter((item) => item.length > 2).slice(0, 10)) {
+      if (hay.includes(word)) score += 1;
+    }
+  }
+  return score;
+}
+
+export function selectTopicCandidates<T extends { id: string; title: string; description?: string | null }>(
+  topics: T[],
+  workTitle: string | null,
+  description: string | null,
+  limit = 5,
+) {
+  if (!topics.length) return [] as T[];
+  const ranked = topics
+    .map((topic) => ({ topic, score: scoreTorTopicMatch(topic, workTitle, description) }))
+    .sort((a, b) => b.score - a.score || a.topic.title.localeCompare(b.topic.title, "th"));
+  const best = ranked[0]!;
+  if (best.score <= 0) {
+    return ranked.slice(0, Math.min(3, ranked.length)).map((row) => row.topic);
+  }
+  const close = ranked.filter((row) => row.score >= best.score - 1);
+  if (close.length >= 2) return close.slice(0, limit).map((row) => row.topic);
+  return [best.topic];
+}
+
 /** แปลงคำตอบสั้น ๆ ของผู้ใช้เป็นหมวด TOR */
 export function parseCategoryAnswer(message: string) {
   const text = message.trim();
