@@ -51,13 +51,20 @@ export async function confirmJa(userId: string, raw: unknown) {
 
   const yearAnchor = startAt ?? new Date();
   return prisma.$transaction(async (tx) => {
-    const count = await tx.jaRecord.count({
-      where: {
-        userId,
-        createdAt: { gte: new Date(Date.UTC(yearAnchor.getUTCFullYear(), 0, 1)) },
-      },
+    const year = yearAnchor.getUTCFullYear();
+    const prefix = `JA-${year}-`;
+    // runningNumber เป็น @unique ทั้งระบบ — ต้องนับจากเลขล่าสุดของทั้งฐาน ไม่ใช่แค่ของ user
+    const latest = await tx.jaRecord.findFirst({
+      where: { runningNumber: { startsWith: prefix } },
+      orderBy: { runningNumber: "desc" },
+      select: { runningNumber: true },
     });
-    const runningNumber = `JA-${yearAnchor.getUTCFullYear()}-${String(count + 1).padStart(6, "0")}`;
+    let nextSeq = 1;
+    if (latest?.runningNumber) {
+      const parsed = Number(latest.runningNumber.slice(prefix.length));
+      if (Number.isFinite(parsed) && parsed >= 0) nextSeq = parsed + 1;
+    }
+    const runningNumber = `${prefix}${String(nextSeq).padStart(6, "0")}`;
     const record = await tx.jaRecord.create({
       data: {
         workTitle: input.workTitle,
