@@ -145,7 +145,19 @@ export function isCategoryChangeIntent(message: string) {
   return (
     /เปลี่ยน\s*หมวด|ย้าย\s*(?:ไป\s*)?หมวด|แก้\s*หมวด|ปรับ\s*หมวด/.test(text)
     || /หมวด(?:นี้)?(?:เป็น|ไป(?:เป็น)?|คือ)/.test(text)
-    || /เปลี่ยนเป็น(?:หมวด)?(?:งาน)?(?:ประจำ|มอบหมาย|เชิงพัฒนา)/.test(text)
+    || /เปลี่ยน(?:เป็น|ไป(?:ยัง)?|ไป)(?:หมวด)?(?:งาน)?(?:ประจำ|มอบหมาย|เชิงพัฒนา|อื่น)/.test(text)
+    || /ย้ายไป(?:ยัง)?(?:หมวด)?(?:งาน)?(?:ประจำ|มอบหมาย|เชิงพัฒนา)/.test(text)
+    || /ไปยัง(?:หมวด)?(?:งาน)?(?:ประจำ|มอบหมาย|เชิงพัฒนา)/.test(text)
+  );
+}
+
+/** ผู้ใช้ต้องการเลือก/เปลี่ยนหัวข้อ TOR ของร่าง */
+export function isTopicChangeIntent(message: string) {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  return (
+    /เปลี่ยน\s*หัวข้อ|เลือก\s*หัวข้อ|แก้\s*หัวข้อ|หัวข้อ\s*ใหม่|เปลี่ยน\s*TOR/.test(text)
+    || /หัวข้อ(?:นี้)?(?:ไม่ถูก|ผิด|ไม่ใช่)/.test(text)
   );
 }
 
@@ -239,19 +251,19 @@ export function parseCategoryAnswer(message: string) {
 
   if (
     /^(a|routine|ประจำ|งานประจำ)$/i.test(compact)
-    || /งานประจำ|หมวดประจำ|หน้าที่หลัก/.test(text)
+    || /งานประจำ|หมวดประจำ|หน้าที่หลัก|หมวด\s*a\b/i.test(text)
   ) {
     return "ROUTINE" as const;
   }
   if (
     /^(b|assigned|มอบหมาย|รับมอบหมาย)$/i.test(compact)
-    || /งานที่ได้รับมอบหมาย|ได้รับมอบหมาย|หมวดมอบหมาย/.test(text)
+    || /งานที่ได้รับมอบหมาย|ได้รับมอบหมาย|หมวดมอบหมาย|หมวด\s*b\b/i.test(text)
   ) {
     return "ASSIGNED" as const;
   }
   if (
     /^(c|development|develop|พัฒนา|เชิงพัฒนา)$/i.test(compact)
-    || /งานเชิงพัฒนา|ภาระงานเชิงพัฒนา|หมวดพัฒนา/.test(text)
+    || /งานเชิงพัฒนา|ภาระงานเชิงพัฒนา|หมวดพัฒนา|หมวด\s*c\b/i.test(text)
   ) {
     return "DEVELOPMENT" as const;
   }

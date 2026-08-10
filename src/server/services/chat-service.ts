@@ -33,6 +33,7 @@ import {
   isSaveAsIsIntent,
   isSaveDuplicateIntent,
   isSkipScheduleIntent,
+  isTopicChangeIntent,
   onlyScheduleFieldsMissing,
   parseCategoryAnswer,
   parseTorYearFromMessage,
@@ -977,6 +978,193 @@ export async function sendChatMessage(
   await prisma.message.create({
     data: { conversationId, role: "USER", content },
   });
+
+  // คำสั่งเปลี่ยนหมวด / เปลี่ยนหัวข้อ — ทำในเครื่อง ไม่ให้ AI ทับด้วยชุดเดิม
+  const answeredCategoryEarly = parseCategoryAnswer(content);
+  const shortCategorySwitch =
+    Boolean(answeredCategoryEarly)
+    && Boolean(draft.category)
+    && answeredCategoryEarly !== draft.category
+    && content.replace(/\s+/g, " ").trim().length <= 40
+    && !isConfirmIntent(content)
+    && !isSaveAsIsIntent(content)
+    && !isSkipScheduleIntent(content);
+  if (isCategoryChangeIntent(content) || isTopicChangeIntent(content) || shortCategorySwitch) {
+    const answeredCategory = answeredCategoryEarly;
+    const wantsTopicPick = isTopicChangeIntent(content);
+    const nextCategory = isCategoryChangeIntent(content) || shortCategorySwitch
+      ? (answeredCategory ?? null)
+      : draft.category;
+
+    if ((isCategoryChangeIntent(content) || shortCategorySwitch) && !answeredCategory) {
+      await prisma.message.create({
+        data: {
+          conversationId,
+          role: "ASSISTANT",
+          content: [
+            "รับทราบว่าต้องการเปลี่ยนหมวด กรุณาระบุหมวดปลายทางให้ชัดเจน:",
+            "1) งานประจำ",
+            "2) งานที่ได้รับมอบหมาย",
+            "3) งานเชิงพัฒนา",
+            "",
+            "ตัวอย่าง: “เปลี่ยนหมวดไปงานประจำ”",
+          ].join("\n"),
+        },
+      });
+      await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+      return {
+        ...(await getConversation(userId, conversationId)),
+        torYears: resolvedYear.years,
+      };
+    }
+
+    if (!draft.workTitle && !draft.description && !nextCategory) {
+      await prisma.message.create({
+        data: {
+          conversationId,
+          role: "ASSISTANT",
+          content: "ยังไม่มีร่างงานในแชทนี้ — เล่างานก่อน แล้วค่อยสั่งเปลี่ยนหมวดหรือหัวข้อได้",
+        },
+      });
+      return {
+        ...(await getConversation(userId, conversationId)),
+        torYears: resolvedYear.years,
+      };
+    }
+
+    const nextMeta: DraftMeta = {
+      ...existingMeta,
+      torYear: existingMeta.torYear ?? resolvedYear.year,
+      workSubtype: isCategoryChangeIntent(content) || shortCategorySwitch
+        ? inferSubtypeFromWorkText(
+            [draft.description, draft.workTitle, content].filter(Boolean).join(" "),
+            nextCategory,
+          )
+        : existingMeta.workSubtype,
+      pendingTopicOptions: [],
+      allowDuplicateSave: false,
+    };
+
+    let nextTopicId: string | null = wantsTopicPick || isCategoryChangeIntent(content) || shortCategorySwitch
+      ? null
+      : draft.torTopicId;
+    if (
+      nextCategory
+      && (
+        wantsTopicPick
+        || !nextTopicId
+        || !topics.some((topic) => topic.id === nextTopicId && topic.category === nextCategory)
+      )
+    ) {
+      const picked = applyTopicSelection(
+        topics,
+        nextCategory,
+        draft.workTitle,
+        draft.description,
+        null,
+      );
+      nextTopicId = picked.torTopicId;
+      nextMeta.pendingTopicOptions = picked.pendingTopicOptions;
+    }
+
+    const nextDraft = {
+      workTitle: draft.workTitle,
+      category: nextCategory,
+      torTopicId: nextTopicId,
+      description: draft.description,
+      relatedUnit: draft.relatedUnit,
+      location: draft.location,
+      startAt: draft.startAt,
+      endAt: draft.endAt,
+      totalHours: draft.totalHours,
+      result: draft.result ?? draft.description,
+    };
+    const missing = findMissingFields(
+      {
+        ...nextDraft,
+        totalHours: nextDraft.totalHours === null ? null : Number(nextDraft.totalHours),
+        competency: nextMeta.competency,
+      },
+      nextMeta.workSubtype,
+      { scheduleOptional: nextMeta.scheduleSkipped },
+    );
+    const awaitingTopicChoice = nextMeta.pendingTopicOptions.length > 0;
+    if (awaitingTopicChoice && !missing.includes("torTopicId")) missing.push("torTopicId");
+    const ready = missing.length === 0 && !awaitingTopicChoice;
+
+    await prisma.workDraft.update({
+      where: { id: draft.id },
+      data: {
+        ...nextDraft,
+        missingFieldsJson: missing,
+        confirmedFieldsJson: nextMeta,
+        status: ready ? "READY_FOR_REVIEW" : "COLLECTING",
+      },
+    });
+
+    const topicTitle = nextTopicId
+      ? topics.find((topic) => topic.id === nextTopicId)?.title ?? null
+      : null;
+    let reply: string;
+    if (awaitingTopicChoice) {
+      reply = [
+        (isCategoryChangeIntent(content) || shortCategorySwitch) && nextCategory
+          ? `เปลี่ยนหมวดเป็น${categoryLabel[nextCategory]} แล้ว พบหัวข้อ TOR ที่ใกล้เคียงหลายรายการในปี พ.ศ. ${nextMeta.torYear ?? "-"}:`
+          : `เลือกหัวข้อ TOR ใหม่สำหรับร่างนี้ (ปี พ.ศ. ${nextMeta.torYear ?? "-"}):`,
+        ...nextMeta.pendingTopicOptions.map(
+          (option, index) => `${index + 1}) [${option.categoryLabel}] ${option.title}`,
+        ),
+        "",
+        "พิมพ์หมายเลขหัวข้อที่ต้องการ (เช่น 1)",
+      ].join("\n");
+    } else if (ready) {
+      reply = buildReviewMessage({
+        workTitle: nextDraft.workTitle,
+        category: nextDraft.category,
+        workSubtype: nextMeta.workSubtype,
+        topicTitle,
+        description: nextDraft.description,
+        location: nextDraft.location,
+        relatedUnit: nextDraft.relatedUnit,
+        competency: nextMeta.competency,
+        startAt: nextDraft.startAt,
+        endAt: nextDraft.endAt,
+        totalHours: nextDraft.totalHours === null ? null : Number(nextDraft.totalHours),
+        result: nextDraft.result,
+        scheduleSkipped: nextMeta.scheduleSkipped,
+      });
+    } else {
+      reply = composeCollectingReply({
+        acknowledgement: `อัปเดตแล้ว${nextCategory ? ` · หมวด ${categoryLabel[nextCategory]}` : ""}${topicTitle ? ` · หัวข้อ ${topicTitle}` : ""}`,
+        question: buildMissingFieldQuestion(missing, {
+          ...nextMeta,
+          category: nextCategory,
+          topicCountForCategory: nextCategory
+            ? topics.filter((topic) => topic.category === nextCategory).length
+            : 0,
+          totalTopicCount: topics.length,
+          hasDraftSubstance: true,
+        }),
+        fallback: "กรุณาให้ข้อมูลที่ยังขาดต่อได้เลย",
+      });
+    }
+
+    await prisma.message.create({
+      data: { conversationId, role: "ASSISTANT", content: reply },
+    });
+    await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    return {
+      ...(await getConversation(userId, conversationId)),
+      torYears: resolvedYear.years,
+      topics: topics.map((topic) => ({
+        id: topic.id,
+        category: topic.category,
+        categoryLabel: categoryLabel[topic.category],
+        title: topic.title,
+        year: topic.torDocument.year,
+      })),
+    };
+  }
 
   const wantsSaveAsIs = isSaveAsIsIntent(content);
   const wantsSkipSchedule = isSkipScheduleIntent(content) || wantsSaveAsIs;

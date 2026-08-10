@@ -1,4 +1,5 @@
 import { JaTorFormSection } from "@/components/ja/ja-tor-form-section";
+import { JaYearFilter } from "@/components/ja/ja-year-filter";
 import { TorJaExportButtons } from "@/components/ja/tor-ja-export-buttons";
 import { requirePageSession } from "@/lib/auth/session";
 import {
@@ -6,19 +7,34 @@ import {
   loadJaReportDocument,
 } from "@/server/services/ja-report-service";
 
-export default async function SettingsJaPage() {
+export default async function SettingsJaPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ year?: string }>;
+}) {
   const { userId } = await requirePageSession();
+  const params = await searchParams;
   const docs = await listJaReportDocuments(userId);
-  const reports = await Promise.all(docs.map((doc) => loadJaReportDocument(userId, doc.id)));
+  const years = [...new Set(docs.map((doc) => doc.year))].sort((a, b) => b - a);
+  const requestedYear = params.year ? Number(params.year) : null;
+  const selectedYear =
+    requestedYear && years.includes(requestedYear) ? requestedYear : (years[0] ?? null);
+  const filteredDocs = selectedYear ? docs.filter((doc) => doc.year === selectedYear) : docs;
+  const reports = await Promise.all(filteredDocs.map((doc) => loadJaReportDocument(userId, doc.id)));
 
   return (
     <section>
-      <p className="text-sm font-medium text-teal-700">งาน</p>
-      <h1 className="mt-2 text-3xl font-semibold">รายงานผลการปฏิบัติงานจริง</h1>
-      <p className="mt-2 max-w-3xl text-stone-600">
-        แสดงทั้งฉบับตามฟอร์ม TOR — ซ้ายคือภาระงานตาม TOR ขวาคือผลการปฏิบัติงานจริง (JA)
-        โดยชม./สัปดาห์ฝั่ง JA แสดงผลรวมชั่วโมงจริงของหัวข้อ และส่งออกได้ทั้งฉบับเป็น Word/PDF
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium text-teal-700">งาน</p>
+          <h1 className="mt-2 text-3xl font-semibold">รายงานผลการปฏิบัติงานจริง</h1>
+          <p className="mt-2 max-w-3xl text-stone-600">
+            แสดงทั้งฉบับตามฟอร์ม TOR — ซ้ายคือภาระงานตาม TOR ขวาคือผลการปฏิบัติงานจริง (JA)
+            โดยชม./สัปดาห์ฝั่ง JA แสดงผลรวมชั่วโมงจริงของหัวข้อ และส่งออกได้ทั้งฉบับเป็น Word/PDF
+          </p>
+        </div>
+        <JaYearFilter years={years} selectedYear={selectedYear} />
+      </div>
 
       <div className="mt-6 space-y-8">
         {reports.length ? (
@@ -85,7 +101,9 @@ export default async function SettingsJaPage() {
           ))
         ) : (
           <div className="rounded-2xl border border-stone-200 bg-white p-8 text-center text-stone-500">
-            ยังไม่มีเอกสาร TOR สำหรับสร้างรายงาน — ไปที่ตั้งค่า → TOR เพื่ออัปโหลดก่อน
+            {years.length
+              ? `ยังไม่มีรายงานในปี พ.ศ. ${selectedYear ?? "-"} — เลือกปีอื่น หรือไปอัปโหลด TOR ปีนั้น`
+              : "ยังไม่มีเอกสาร TOR สำหรับสร้างรายงาน — ไปที่ตั้งค่า → TOR เพื่ออัปโหลดก่อน"}
           </div>
         )}
       </div>

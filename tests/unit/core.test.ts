@@ -345,7 +345,9 @@ describe("TORI core business rules", () => {
   });
   it("detects category change intents and TOR year answers", () => {
     expect(isCategoryChangeIntent("เปลี่ยนหมวดไปงานประจำ")).toBe(true);
+    expect(isCategoryChangeIntent("เปลี่ยนหมวดไปยังงานเชิงพัฒนา")).toBe(true);
     expect(isCategoryChangeIntent("วันนี้ไปอบรม AI")).toBe(false);
+    expect(parseCategoryAnswer("เปลี่ยนหมวดไปยังงานประจำ")).toBe("ROUTINE");
     expect(parseTorYearFromMessage("ใช้ TOR ปี 2569")).toBe(2569);
     expect(parseTorYearFromMessage("พ.ศ. 2568")).toBe(2568);
     expect(parseTopicChoiceIndex("2", 3)).toBe(1);
