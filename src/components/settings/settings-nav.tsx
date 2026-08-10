@@ -9,7 +9,13 @@ const navItems = [
   { href: "/settings/dashboard", label: "ภาพรวม", description: "สรุปชั่วโมงและหมวดงาน" },
 ] as const;
 
-export function SettingsNav({ isAdmin }: { isAdmin: boolean }) {
+export function SettingsNav({
+  isAdmin,
+  embedded = false,
+}: {
+  isAdmin: boolean;
+  embedded?: boolean;
+}) {
   const pathname = usePathname();
 
   function itemClass(href: string) {
@@ -20,7 +26,7 @@ export function SettingsNav({ isAdmin }: { isAdmin: boolean }) {
   }
 
   return (
-    <nav className="space-y-1 rounded-2xl border border-stone-200 bg-white p-2">
+    <nav className={embedded ? "space-y-0.5" : "space-y-1 rounded-2xl border border-stone-200 bg-white p-2"}>
       {navItems.map((item) => (
         <Link key={item.href} href={item.href} className={itemClass(item.href)}>
           <span className="block text-sm font-medium text-stone-800">{item.label}</span>

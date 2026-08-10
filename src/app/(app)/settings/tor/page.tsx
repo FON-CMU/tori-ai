@@ -20,7 +20,7 @@ const statusLabel = {
 export default async function SettingsTorPage() {
   const { userId } = await requirePageSession();
   const docs = await prisma.torDocument.findMany({
-    where: { userId },
+    where: { userId, status: { not: "ARCHIVED" } },
     orderBy: [{ year: "desc" }, { version: "desc" }],
     include: {
       topics: { orderBy: [{ sortOrder: "asc" }, { title: "asc" }] },
@@ -38,6 +38,11 @@ export default async function SettingsTorPage() {
       </p>
       <TorUploader maxSizeMb={env.MAX_TOR_FILE_SIZE_MB} />
       <div className="mt-6 space-y-4">
+        {docs.length === 0 ? (
+          <p className="rounded-2xl border border-dashed border-stone-200 bg-white p-8 text-center text-sm text-stone-500">
+            ยังไม่มีไฟล์ TOR ในรายการ — อัปโหลดด้านบนเพื่อเริ่มใช้งาน
+          </p>
+        ) : null}
         {docs.map((doc) => {
           const hasPages = doc.pages.length > 0;
           const hasTopics = doc.topics.length > 0;

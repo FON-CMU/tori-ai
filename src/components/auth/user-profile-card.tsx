@@ -5,6 +5,8 @@ type ProfileCardProps = {
   unitName: string;
   isAdmin: boolean;
   compact?: boolean;
+  /** ไม่มีกรอบนอก — ใช้เมื่ออยู่ในการ์ดโปรไฟล์รวม */
+  bare?: boolean;
 };
 
 export function UserProfileCard({
@@ -14,6 +16,7 @@ export function UserProfileCard({
   unitName,
   isAdmin,
   compact = false,
+  bare = false,
 }: ProfileCardProps) {
   const initials = displayName
     .replace(/\s+/g, "")
@@ -38,24 +41,30 @@ export function UserProfileCard({
     );
   }
 
+  const body = (
+    <div className="flex items-start gap-3">
+      <span className="grid size-11 shrink-0 place-items-center rounded-full bg-teal-700 text-sm font-semibold text-white">
+        {initials}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-stone-900">{displayName}</p>
+        <p className="mt-0.5 truncate text-xs text-stone-500">{email}</p>
+        {position ? <p className="mt-1 truncate text-xs text-stone-600">{position}</p> : null}
+        {unitName ? <p className="mt-0.5 truncate text-xs text-stone-500">{unitName}</p> : null}
+        {isAdmin ? (
+          <span className="mt-2 inline-flex rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-medium text-teal-800">
+            ADMIN
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  if (bare) return body;
+
   return (
     <div className="rounded-2xl border border-stone-200 bg-white p-4">
-      <div className="flex items-start gap-3">
-        <span className="grid size-11 shrink-0 place-items-center rounded-full bg-teal-700 text-sm font-semibold text-white">
-          {initials}
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-stone-900">{displayName}</p>
-          <p className="mt-0.5 truncate text-xs text-stone-500">{email}</p>
-          {position ? <p className="mt-1 truncate text-xs text-stone-600">{position}</p> : null}
-          <p className="mt-0.5 truncate text-xs text-stone-500">{unitName}</p>
-          {isAdmin ? (
-            <span className="mt-2 inline-flex rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-medium text-teal-800">
-              ADMIN
-            </span>
-          ) : null}
-        </div>
-      </div>
+      {body}
     </div>
   );
 }

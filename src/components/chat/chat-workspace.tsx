@@ -432,26 +432,22 @@ export function ChatWorkspace({
           </div>
         </div>
 
-        <div className="border-t border-[var(--apple-line)] p-3 space-y-1">
-          <UserProfileCard
-            compact
-            displayName={user.displayName}
-            email={user.email}
-            position={null}
-            unitName=""
-            isAdmin={user.isAdmin}
-          />
+        <div className="border-t border-[var(--apple-line)] p-3">
           <Link
             href="/settings"
             onClick={() => setSidebarOpen(false)}
-            className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] text-[var(--apple-ink)] transition hover:bg-black/[0.04]"
+            className="block rounded-xl transition hover:bg-black/[0.04]"
           >
-            <span className="grid size-8 place-items-center rounded-full bg-black/[0.04] text-[var(--apple-muted)]">
-              ⚙
-            </span>
-            <span>
-              <span className="block font-medium">ตั้งค่า</span>
-              <span className="block text-[11px] text-[var(--apple-muted)]">TOR · JA · AI</span>
+            <UserProfileCard
+              compact
+              displayName={user.displayName}
+              email={user.email}
+              position={null}
+              unitName=""
+              isAdmin={user.isAdmin}
+            />
+            <span className="block px-3 pb-2 text-[11px] text-[var(--apple-muted)]">
+              โปรไฟล์และตั้งค่า →
             </span>
           </Link>
         </div>
