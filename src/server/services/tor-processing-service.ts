@@ -61,6 +61,9 @@ export async function processTor(userId: string, torDocumentId: string) {
       include: { pages: true, topics: true },
     });
   } catch (error) {
+    // ผู้ใช้เห็นเพียงข้อความกลาง ๆ และ 422 เป็น ApiError ที่ errorResponse ไม่ log
+    // ให้ — ถ้าไม่พิมพ์ตรงนี้ สาเหตุจริง (อ่าน blob ไม่ได้ / ไฟล์เสีย) จะหายไปเฉย ๆ
+    console.error("[tor] processTor failed", error);
     const message =
       error instanceof Error && error.message === "NO_TEXT"
         ? "ไม่พบข้อความในเอกสาร ต้องใช้ OCR สำหรับเอกสารสแกน"
