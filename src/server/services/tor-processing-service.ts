@@ -22,6 +22,20 @@ async function extractPages(mimeType: string, bytes: Uint8Array) {
   return [{ pageNumber: 1, text: result.value.trim() }];
 }
 
+function topicMatchKey(input: {
+  category: string;
+  kind: string;
+  code: string | null;
+  title: string;
+}) {
+  return [
+    input.category,
+    input.kind,
+    (input.code ?? "").trim().toLowerCase(),
+    input.title.trim().toLowerCase().replace(/\s+/g, " "),
+  ].join("|");
+}
+
 export async function processTor(userId: string, torDocumentId: string) {
   const document = await prisma.torDocument.findFirst({ where: { id: torDocumentId, userId } });
   if (!document) throw new ApiError(404, "TOR_NOT_FOUND", "ไม่พบเอกสาร TOR");
@@ -76,12 +90,30 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
   const activate = options?.activate ?? true;
   const document = await prisma.torDocument.findFirst({
     where: { id: torDocumentId, userId },
-    include: { pages: { orderBy: { pageNumber: "asc" } } },
+    include: {
+      pages: { orderBy: { pageNumber: "asc" } },
+      topics: {
+        where: { kind: "TOPIC" },
+        select: { id: true, category: true, kind: true, code: true, title: true },
+      },
+    },
   });
   if (!document) throw new ApiError(404, "TOR_NOT_FOUND", "ไม่พบเอกสาร TOR");
   if (!document.pages.length) {
     throw new ApiError(409, "TEXT_REQUIRED", "กรุณาประมวลผลข้อความจากเอกสารก่อน");
   }
+
+  // จับคู่ JA เดิมก่อนลบหัวข้อ เพื่อผูกกลับหลังวิเคราะห์ใหม่
+  const oldTopicIds = document.topics.map((topic) => topic.id);
+  const jaLinks = oldTopicIds.length
+    ? await prisma.jaRecord.findMany({
+        where: { userId, torTopicId: { in: oldTopicIds }, status: { not: "ARCHIVED" } },
+        select: { id: true, torTopicId: true },
+      })
+    : [];
+  const oldKeyByTopicId = new Map(
+    document.topics.map((topic) => [topic.id, topicMatchKey(topic)]),
+  );
 
   await prisma.torDocument.update({
     where: { id: document.id },
@@ -97,7 +129,6 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
     if (!extraction.topics.length) throw new Error("NO_TOPICS");
 
     await prisma.$transaction(async (tx) => {
-      // ตัด parent ก่อน แล้วลบทั้งชุดเพื่อแทนที่ด้วยโครงใหม่ตามไฟล์
       await tx.torTopic.updateMany({
         where: { torDocumentId: document.id },
         data: { parentId: null },
@@ -105,6 +136,7 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
       await tx.torTopic.deleteMany({ where: { torDocumentId: document.id } });
 
       const keyToId = new Map<string, string>();
+      const matchKeyToId = new Map<string, string>();
       const sorted = [...extraction.topics].sort((a, b) => a.sortOrder - b.sortOrder);
 
       for (const topic of sorted) {
@@ -129,9 +161,61 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
             sourcePage: topic.sourcePage,
             status: activate ? "CONFIRMED" : "DRAFT",
           },
-          select: { id: true },
+          select: { id: true, category: true, kind: true, code: true, title: true },
         });
         keyToId.set(topic.selfKey, created.id);
+        matchKeyToId.set(topicMatchKey(created), created.id);
+      }
+
+      // ผูก JA กลับตาม category+kind+code+title
+      for (const link of jaLinks) {
+        if (!link.torTopicId) continue;
+        const oldKey = oldKeyByTopicId.get(link.torTopicId);
+        const newId = oldKey ? matchKeyToId.get(oldKey) : null;
+        if (newId) {
+          await tx.jaRecord.update({
+            where: { id: link.id },
+            data: { torTopicId: newId, torDocumentId: document.id },
+          });
+        }
+      }
+
+      // ย้าย JA จาก TOR ปีเดียวกันที่ถูก archive มาผูกกับฉบับใหม่เมื่อ activate
+      if (activate) {
+        const archivedSameYear = await tx.torDocument.findMany({
+          where: {
+            userId,
+            year: document.year,
+            status: "ARCHIVED",
+            id: { not: document.id },
+          },
+          select: { id: true },
+        });
+        if (archivedSameYear.length) {
+          const orphaned = await tx.jaRecord.findMany({
+            where: {
+              userId,
+              torDocumentId: { in: archivedSameYear.map((row) => row.id) },
+              status: { not: "ARCHIVED" },
+            },
+            include: {
+              torTopic: { select: { category: true, kind: true, code: true, title: true } },
+            },
+          });
+          for (const ja of orphaned) {
+            const key = ja.torTopic
+              ? topicMatchKey(ja.torTopic)
+              : null;
+            const newTopicId = key ? matchKeyToId.get(key) : null;
+            await tx.jaRecord.update({
+              where: { id: ja.id },
+              data: {
+                torDocumentId: document.id,
+                torTopicId: newTopicId ?? ja.torTopicId,
+              },
+            });
+          }
+        }
       }
 
       await tx.torDocument.update({
@@ -175,6 +259,7 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
   }
 }
 
+/** ประมวลผล + วิเคราะห์แยก request ใน API — helper สำหรับ local/legacy */
 export async function ingestTor(userId: string, torDocumentId: string) {
   const processed = await processTor(userId, torDocumentId);
   try {

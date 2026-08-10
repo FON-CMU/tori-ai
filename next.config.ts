@@ -2,7 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
-  output: "standalone",
+  // Docker ใช้ standalone; Vercel สร้าง output เอง — อย่าบังคับ standalone บน Vercel
+  ...(process.env.VERCEL ? {} : { output: "standalone" as const }),
   async headers() {
     return [{
       source: "/(.*)",

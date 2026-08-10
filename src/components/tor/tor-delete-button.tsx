@@ -8,33 +8,39 @@ export function TorDeleteButton({ id, fileName }: { id: string; fileName: string
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function remove() {
-    if (!window.confirm(`ลบ TOR “${fileName}” หรือไม่? การกระทำนี้ไม่สามารถย้อนกลับได้`)) return;
+  async function archive() {
+    if (
+      !window.confirm(
+        `เก็บถาวร TOR “${fileName}” หรือไม่? ไฟล์จะถูกเก็บถาวร (ไม่ลบถาวร) และผลงานที่บันทึกไว้จะยังอยู่`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const response = await fetch(`/api/tor/${id}`, { method: "DELETE" });
       const body = await response.json() as { error?: { message?: string } };
-      if (!response.ok) throw new Error(body.error?.message ?? "ลบไม่สำเร็จ");
+      if (!response.ok) throw new Error(body.error?.message ?? "เก็บถาวรไม่สำเร็จ");
       router.refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "ลบไม่สำเร็จ");
+      setError(reason instanceof Error ? reason.message : "เก็บถาวรไม่สำเร็จ");
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div>
+    <div className="space-y-1">
       <button
         type="button"
-        onClick={remove}
         disabled={busy}
-        className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+        onClick={archive}
+        className="rounded-lg border border-stone-200 px-2.5 py-1 text-xs text-stone-600 hover:bg-stone-50 disabled:opacity-50"
       >
-        {busy ? "กำลังลบ…" : "ลบ"}
+        {busy ? "กำลังเก็บถาวร…" : "เก็บถาวร"}
       </button>
-      {error ? <p className="mt-2 text-sm text-red-700">{error}</p> : null}
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
     </div>
   );
 }

@@ -30,6 +30,7 @@ function safeDisplayName(name: string) {
   return path.basename(name).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 180) || "tor-document";
 }
 
+/** อัปโหลดอย่างเดียว — ไม่ประมวลผล/วิเคราะห์ใน request เดียวกัน */
 export async function uploadTor(userId: string, file: File, yearInput?: unknown) {
   const year = yearInput === undefined || yearInput === null || yearInput === ""
     ? currentBuddhistYear()
@@ -51,9 +52,21 @@ export async function uploadTor(userId: string, file: File, yearInput?: unknown)
   });
   if (duplicate) throw new ApiError(409, "DUPLICATE_FILE", "ไฟล์ TOR นี้ถูกอัปโหลดแล้ว");
 
+  // ปีเดียวกันมีฉบับใช้งานอยู่ — เก็บถาวรฉบับเก่า (ผลงานจะถูกย้ายตอน activate ฉบับใหม่)
+  const activeSameYear = await prisma.torDocument.findMany({
+    where: { userId, year, status: "ACTIVE" },
+    select: { id: true },
+  });
+  if (activeSameYear.length) {
+    await prisma.torDocument.updateMany({
+      where: { id: { in: activeSameYear.map((row) => row.id) } },
+      data: { status: "ARCHIVED", processingError: "ถูกแทนที่ด้วย TOR ฉบับใหม่ปีเดียวกัน" },
+    });
+  }
+
   const latest = await prisma.torDocument.aggregate({ where: { userId }, _max: { version: true } });
   const storageKey = `${userId}/${randomUUID()}`;
-  await objectStorage.put(storageKey, bytes);
+  await objectStorage.put(storageKey, bytes, mimeType);
   try {
     return await prisma.torDocument.create({
       data: {
@@ -86,11 +99,28 @@ export async function updateTorYear(userId: string, torDocumentId: string, yearI
   });
 }
 
+/** เก็บถาวร — ไม่ลบไฟล์/ผลงานที่บันทึกแล้ว */
 export async function deleteTor(userId: string, torDocumentId: string) {
   const document = await prisma.torDocument.findFirst({ where: { id: torDocumentId, userId } });
   if (!document) throw new ApiError(404, "TOR_NOT_FOUND", "ไม่พบเอกสาร TOR");
+  if (document.status === "ARCHIVED") {
+    return { id: document.id, status: "ARCHIVED" as const };
+  }
 
-  await prisma.torDocument.delete({ where: { id: document.id } });
-  await objectStorage.delete(document.storageKey);
-  return { id: document.id };
+  const before = JSON.parse(JSON.stringify(document));
+  const updated = await prisma.torDocument.update({
+    where: { id: document.id },
+    data: { status: "ARCHIVED" },
+  });
+  await prisma.auditLog.create({
+    data: {
+      actorId: userId,
+      action: "TOR_ARCHIVED",
+      objectType: "TorDocument",
+      objectId: document.id,
+      beforeJson: before,
+      afterJson: JSON.parse(JSON.stringify(updated)),
+    },
+  });
+  return { id: updated.id, status: updated.status };
 }

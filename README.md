@@ -49,7 +49,14 @@ Each Entra account maps to one TORI user (1 คน = 1 โปรไฟล์). T
 
 CMU OIDC (optional) requires `CMU_CLIENT_ID`, `CMU_CLIENT_SECRET`, `CMU_ISSUER`, and `CMU_REDIRECT_URI`. AI operations require both `OPENAI_API_KEY` and `OPENAI_MODEL` (or admin-configured keys). TOR uploads use `LOCAL_STORAGE_PATH` (default `./storage`, or `/data/tori` in Docker). No integration secret belongs in source control.
 
-## Quality commands
+## Deploy (Vercel + Neon + Blob)
+
+1. Set Vercel region to `sin1` and env: `DATABASE_URL`, `AUTH_SECRET`, `STORAGE_DRIVER=vercel-blob`, `BLOB_READ_WRITE_TOKEN`, `APP_URL`, optionally `MAX_TOR_FILE_SIZE_MB=4`.
+2. Run `npx prisma migrate deploy` against Neon **before** (or with) each schema-changing release — migrations are **not** applied at build time.
+3. Auth: configure Microsoft Entra (`ENTRA_*`) or temporary `DEMO_LOGIN_ENABLED=true` with email/password until Entra is ready.
+4. Thai user manual: [`manual.pdf`](./manual.pdf).
+
+Local Docker still uses Compose; storage defaults to `STORAGE_DRIVER=local`.
 
 ```bash
 npm run lint

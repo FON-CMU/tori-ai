@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { DemoLoginForm } from "@/components/auth/demo-login-form";
+
 const errorMessages: Record<string, string> = {
   invalid_callback: "การยืนยันตัวตนไม่สำเร็จ (state ไม่ตรง) กรุณาลองใหม่",
   entra_not_configured: "ยังไม่ได้ตั้งค่า Microsoft Entra ในระบบ",
@@ -7,6 +9,7 @@ const errorMessages: Record<string, string> = {
   entra_callback_failed: "ยืนยันตัวตนกับ Microsoft ไม่สำเร็จ",
   cmu_not_configured: "ยังไม่ได้ตั้งค่า CMU Account",
   cmu_start_failed: "เริ่มเข้าสู่ระบบ CMU ไม่สำเร็จ",
+  demo_invalid: "อีเมลหรือรหัสผ่านสาธิตไม่ถูกต้อง",
 };
 
 export default async function LoginPage({
@@ -26,6 +29,9 @@ export default async function LoginPage({
     && process.env.ENTRA_CLIENT_SECRET
     && process.env.ENTRA_REDIRECT_URI,
   );
+  const demoReady = process.env.DEMO_LOGIN_ENABLED === "true"
+    && Boolean(process.env.DEMO_LOGIN_EMAIL)
+    && Boolean(process.env.DEMO_LOGIN_PASSWORD);
   const error = (await searchParams).error;
   const errorText = error
     ? (errorMessages[error] ?? "เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่")
@@ -65,16 +71,20 @@ export default async function LoginPage({
             </Link>
           ) : null}
 
-          {!entraReady && !cmuReady ? (
+          {!entraReady && !cmuReady && !demoReady ? (
             <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
               ยังไม่ได้ตั้งค่า Microsoft Entra หรือ CMU Account — ในโหมดพัฒนาใช้บัญชีสาธิตได้
             </p>
           ) : null}
 
+          {demoReady ? (
+            <DemoLoginForm defaultEmail={process.env.DEMO_LOGIN_EMAIL} />
+          ) : null}
+
           {process.env.NODE_ENV === "development" ? (
             <form action="/api/auth/mock" method="post">
               <button className="w-full rounded-xl border border-stone-200 bg-white px-5 py-3 font-medium text-stone-800 hover:bg-stone-50">
-                เข้าใช้บัญชีสาธิต
+                เข้าใช้บัญชีสาธิต (dev)
               </button>
             </form>
           ) : null}

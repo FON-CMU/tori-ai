@@ -12,28 +12,35 @@ type Settings = {
 export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
   const [settings, setSettings] = useState(initial);
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState(initial.model || "gemini-3.6-flash");
+  const [model, setModel] = useState(initial.model || "gemini-2.5-flash");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ error?: boolean; text: string } | null>(null);
 
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (!settings.configured && !apiKey.trim()) {
+      setMessage({ error: true, text: "กรุณาใส่ Google AI Studio API key" });
+      return;
+    }
     setBusy(true);
     setMessage(null);
     try {
       const response = await fetch("/api/settings/google-ai-studio", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey, model }),
+        body: JSON.stringify({
+          apiKey: apiKey.trim() || undefined,
+          model,
+        }),
       });
       const body = await response.json() as { data?: Settings; error?: { message?: string } };
       if (!response.ok || !body.data) throw new Error(body.error?.message ?? "บันทึกไม่สำเร็จ");
       setSettings(body.data);
       setApiKey("");
-      setMessage("บันทึกและเลือก Google AI Studio เป็น provider หลักของระบบแล้ว");
+      setMessage({ text: "บันทึกและเลือก Google AI Studio เป็น provider หลักของระบบแล้ว" });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "บันทึกไม่สำเร็จ");
+      setMessage({ error: true, text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" });
     } finally {
       setBusy(false);
     }
@@ -45,9 +52,9 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
     const response = await fetch("/api/settings/google-ai-studio", { method: "DELETE" });
     if (response.ok) {
       setSettings({ configured: false, suffix: null, model: "", active: false });
-      setMessage("ลบ API key ของระบบแล้ว");
+      setMessage({ text: "ลบ API key ของระบบแล้ว" });
     } else {
-      setMessage("ลบคีย์ไม่สำเร็จ");
+      setMessage({ error: true, text: "ลบคีย์ไม่สำเร็จ" });
     }
     setBusy(false);
   }
@@ -63,13 +70,15 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
       });
       const body = await response.json() as { data?: { model: string; latencyMs: number }; error?: { message?: string } };
       if (!response.ok || !body.data) throw new Error(body.error?.message ?? "ทดสอบไม่สำเร็จ");
-      setMessage(`AI ใช้งานได้ · ${body.data.model} · ${body.data.latencyMs.toLocaleString()} ms`);
+      setMessage({ text: `AI ใช้งานได้ · ${body.data.model} · ${body.data.latencyMs.toLocaleString()} ms` });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "ทดสอบไม่สำเร็จ");
+      setMessage({ error: true, text: error instanceof Error ? error.message : "ทดสอบไม่สำเร็จ" });
     } finally {
       setBusy(false);
     }
   }
+
+  const canSave = Boolean(model.trim()) && (settings.configured || Boolean(apiKey.trim()));
 
   return (
     <div className="max-w-2xl rounded-2xl border border-stone-200 bg-white p-6 shadow-sm md:p-8">
@@ -95,13 +104,13 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
           <div className="mt-2 flex rounded-xl border border-stone-300 focus-within:border-blue-600">
             <input
               id="google-key"
-              required
-              minLength={20}
+              minLength={settings.configured ? undefined : 20}
+              required={!settings.configured}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               type={show ? "text" : "password"}
               autoComplete="off"
-              placeholder="ใส่ API key จาก Google AI Studio"
+              placeholder={settings.configured ? "ใส่คีย์ใหม่เมื่อต้องการเปลี่ยน" : "ใส่ API key จาก Google AI Studio"}
               className="h-12 min-w-0 flex-1 rounded-xl px-3 font-mono text-sm outline-none"
             />
             <button type="button" onClick={() => setShow(!show)} className="px-3 text-xs text-stone-500">
@@ -116,24 +125,26 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
             required
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            placeholder="gemini-3.6-flash"
+            placeholder="gemini-2.5-flash"
             className="mt-2 h-12 w-full rounded-xl border border-stone-300 px-3 text-sm outline-none focus:border-blue-600"
           />
           <p className="mt-2 text-xs text-stone-500">
-            ใช้รหัสโมเดล เช่น <code className="rounded bg-stone-100 px-1">gemini-3.6-flash</code> ไม่ใช่ชื่อแสดงผล
+            ตัวอย่าง: <code className="rounded bg-stone-100 px-1">gemini-2.5-flash</code>,{" "}
+            <code className="rounded bg-stone-100 px-1">gemini-2.5-pro</code>,{" "}
+            <code className="rounded bg-stone-100 px-1">gemini-2.0-flash</code>
           </p>
         </div>
         {message ? (
           <p
             role="status"
-            className={`rounded-xl p-3 text-sm ${message.startsWith("AI ใช้งานได้") || message.includes("แล้ว") ? "bg-emerald-50 text-emerald-700" : "bg-stone-50 text-stone-700"}`}
+            className={`rounded-xl p-3 text-sm ${message.error ? "bg-stone-50 text-stone-700" : "bg-emerald-50 text-emerald-700"}`}
           >
-            {message}
+            {message.text}
           </p>
         ) : null}
         <div className="flex flex-wrap gap-3">
           <button
-            disabled={busy || !apiKey.trim() || !model.trim()}
+            disabled={busy || !canSave}
             className="rounded-xl bg-blue-700 px-5 py-3 text-sm font-medium text-white disabled:opacity-50"
           >
             {busy ? "กำลังดำเนินการ…" : "บันทึกและใช้งาน"}

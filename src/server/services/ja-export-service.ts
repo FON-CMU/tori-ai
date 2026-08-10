@@ -102,7 +102,7 @@ function topicRows(topic: JaReportTopicRow) {
           cell(index === 0 ? torText : "", COL.tor),
           cell(index === 0 ? torHours : "", COL.torHours, { center: true }),
           cell(formatJaCell(ja), COL.ja),
-          cell("0", COL.jaHours, { center: true }),
+          cell(ja.hoursPerWeek, COL.jaHours, { center: true }),
         ],
       }),
   );
@@ -116,7 +116,7 @@ function orphanRows(jas: JaReportEntry[]) {
           cell("(ยังไม่ผูกหัวข้อ TOR)", COL.tor),
           cell("", COL.torHours, { center: true }),
           cell(formatJaCell(ja), COL.ja),
-          cell("0", COL.jaHours, { center: true }),
+          cell(ja.hoursPerWeek, COL.jaHours, { center: true }),
         ],
       }),
   );
@@ -326,17 +326,28 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
     }
   }
 
-  function drawRow(values: [string, string, string, string], boldHeader = false) {
-    const heights = values.map((value, index) =>
-      doc.heightOfString(value || " ", {
-        width: cols[index].width - 10,
-        lineGap: 1.5,
-      }),
-    );
-    const rowHeight = Math.max(...heights, 18) + 12;
+  function resetTextCursor(y = doc.y) {
+    doc.x = doc.page.margins.left;
+    doc.y = y;
+  }
+
+  function measureCellHeight(value: string, colIndex: number, boldHeader: boolean) {
+    doc.font(boldHeader ? "Thai-Bold" : "Thai").fontSize(boldHeader ? 12 : 11);
+    return doc.heightOfString(value || " ", {
+      width: cols[colIndex].width - 10,
+      lineGap: 1.5,
+    });
+  }
+
+  function paintRow(
+    values: [string, string, string, string],
+    rowHeight: number,
+    boldHeader: boolean,
+  ) {
     ensureSpace(rowHeight);
     const top = doc.y;
     let x = doc.page.margins.left;
+    doc.save();
     doc.rect(x, top, pageWidth, rowHeight).stroke("#1c1917");
     for (let i = 0; i < cols.length; i += 1) {
       const col = cols[i];
@@ -344,14 +355,96 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
       doc
         .font(boldHeader ? "Thai-Bold" : "Thai")
         .fontSize(boldHeader ? 12 : 11)
+        .fillColor("#1c1917")
         .text(values[i] || " ", x + 5, top + 5, {
           width: col.width - 10,
+          height: rowHeight - 10,
           lineGap: 1.5,
           align: i === 1 || i === 3 ? "center" : "left",
         });
       x += col.width;
     }
-    doc.y = top + rowHeight;
+    doc.restore();
+    resetTextCursor(top + rowHeight);
+  }
+
+  /** ตัดข้อความตามความสูงที่เหลือของหน้า — กันแถวยาวถูกตัดหาย */
+  function splitTextToHeight(text: string, colIndex: number, maxHeight: number, boldHeader: boolean) {
+    const lines = (text || " ").split("\n");
+    let kept = "";
+    let rest = "";
+    for (let i = 0; i < lines.length; i += 1) {
+      const candidate = kept ? `${kept}\n${lines[i]}` : lines[i];
+      if (measureCellHeight(candidate, colIndex, boldHeader) + 12 <= maxHeight) {
+        kept = candidate;
+      } else {
+        rest = lines.slice(i).join("\n");
+        break;
+      }
+    }
+    if (!kept && lines.length) {
+      // บรรทัดเดียวสูงเกิน — บังคับใส่บรรทัดแรกแล้วส่งต่อที่เหลือ
+      kept = lines[0];
+      rest = lines.slice(1).join("\n");
+    }
+    return { kept: kept || " ", rest };
+  }
+
+  function drawRow(values: [string, string, string, string], boldHeader = false) {
+    const usablePageHeight =
+      doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+    let remaining: [string, string, string, string] = [...values];
+    let firstChunk = true;
+    let guard = 0;
+
+    while (guard < 40) {
+      guard += 1;
+      const available = Math.max(
+        40,
+        doc.page.height - doc.page.margins.bottom - doc.y,
+      );
+      const heights = remaining.map((value, index) =>
+        measureCellHeight(value, index, boldHeader),
+      );
+      const naturalHeight = Math.max(...heights, 18) + 12;
+
+      if (naturalHeight <= available) {
+        paintRow(remaining, naturalHeight, boldHeader);
+        return;
+      }
+
+      if (available < 60) {
+        doc.addPage();
+        continue;
+      }
+
+      const tallest = heights.indexOf(Math.max(...heights));
+      const { kept, rest } = splitTextToHeight(
+        remaining[tallest],
+        tallest,
+        available - 12,
+        boldHeader,
+      );
+      const chunk: [string, string, string, string] = [...remaining];
+      chunk[tallest] = kept;
+      if (!firstChunk) {
+        if (tallest !== 1) chunk[1] = "";
+        if (tallest !== 3) chunk[3] = "";
+      }
+      const chunkHeight = Math.max(
+        ...chunk.map((value, index) => measureCellHeight(value, index, boldHeader)),
+        18,
+      ) + 12;
+      paintRow(chunk, Math.min(chunkHeight, available, usablePageHeight), boldHeader);
+
+      if (!rest.trim()) return;
+      remaining = ["", "", "", ""];
+      remaining[tallest] = rest;
+      firstChunk = false;
+      if (doc.y + 40 > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage();
+      }
+    }
   }
 
   doc.font("Thai-Bold").fontSize(18).text("แบบบันทึกผลการปฏิบัติงานจริง (JA) ทั้งฉบับตาม TOR", {
@@ -390,30 +483,40 @@ export async function exportTorJaPdf(userId: string, torDocumentId: string) {
           index === 0 ? torText : "",
           index === 0 ? torHours : "",
           formatJaCell(ja),
-          "0",
+          ja.hoursPerWeek,
         ]);
       });
     }
     doc.moveDown(0.5);
+    resetTextCursor();
   }
 
   if (report.orphanJas.length) {
-    doc.font("Thai-Bold").fontSize(15).text("รายการที่ยังไม่ผูกหัวข้อ TOR");
+    resetTextCursor();
+    doc.font("Thai-Bold").fontSize(15).text("รายการที่ยังไม่ผูกหัวข้อ TOR", {
+      width: pageWidth,
+    });
     doc.moveDown(0.3);
     drawRow(
       ["ภาระงาน/ลักษณะงานที่ปฏิบัติ", "ชม./สัปดาห์", "ผลการปฏิบัติงานจริง", "ชม./สัปดาห์"],
       true,
     );
     for (const ja of report.orphanJas) {
-      drawRow(["(ยังไม่ผูกหัวข้อ TOR)", "", formatJaCell(ja), "0"]);
+      drawRow(["(ยังไม่ผูกหัวข้อ TOR)", "", formatJaCell(ja), ja.hoursPerWeek]);
     }
   }
 
+  resetTextCursor();
   doc.moveDown(1.5);
-  doc.font("Thai").fontSize(14).text("ข้าพเจ้าขอรับรองว่าข้อมูลข้างต้นเป็นความจริง");
+  doc.font("Thai").fontSize(14).text("ข้าพเจ้าขอรับรองว่าข้อมูลข้างต้นเป็นความจริง", {
+    width: pageWidth,
+  });
   doc.moveDown(2);
-  doc.fontSize(14).text("ลงชื่อ ............................................ ผู้ปฏิบัติงาน", { align: "right" });
-  doc.text(`(${reportPersonName(report)})`, { align: "right" });
+  doc.fontSize(14).text("ลงชื่อ ............................................ ผู้ปฏิบัติงาน", {
+    align: "right",
+    width: pageWidth,
+  });
+  doc.text(`(${reportPersonName(report)})`, { align: "right", width: pageWidth });
   doc.end();
 
   return {

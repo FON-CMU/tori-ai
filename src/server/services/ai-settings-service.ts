@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets";
 import { env } from "@/lib/env";
+import { ApiError } from "@/lib/http/api-error";
 import { prisma } from "@/lib/prisma";
 import {
   aiSettingsSchema,
@@ -125,25 +126,30 @@ export async function getGoogleAiSettings() {
 
 export async function saveGoogleAiSettings(adminUserId: string, input: unknown) {
   const settings = aiSettingsSchema.parse(input);
+  const existing = await getOrCreateSystemConfig();
+  if (!settings.apiKey && !existing.googleAiApiKeyEncrypted) {
+    throw new ApiError(400, "API_KEY_REQUIRED", "กรุณาใส่ Google AI Studio API key");
+  }
+
   const config = await prisma.systemAiConfig.upsert({
     where: { id: SYSTEM_AI_CONFIG_ID },
     update: {
-      googleAiApiKeyEncrypted: encryptSecret(settings.apiKey),
+      ...(settings.apiKey ? { googleAiApiKeyEncrypted: encryptSecret(settings.apiKey) } : {}),
       googleAiModel: settings.model,
       preferredAiProvider: "GOOGLE_AI_STUDIO",
       updatedById: adminUserId,
     },
     create: {
       id: SYSTEM_AI_CONFIG_ID,
-      googleAiApiKeyEncrypted: encryptSecret(settings.apiKey),
+      googleAiApiKeyEncrypted: settings.apiKey ? encryptSecret(settings.apiKey) : null,
       googleAiModel: settings.model,
       preferredAiProvider: "GOOGLE_AI_STUDIO",
       updatedById: adminUserId,
     },
   });
   return {
-    configured: true,
-    suffix: settings.apiKey.slice(-4),
+    configured: Boolean(config.googleAiApiKeyEncrypted),
+    suffix: suffix(config.googleAiApiKeyEncrypted),
     model: config.googleAiModel ?? settings.model,
     active: true,
   };

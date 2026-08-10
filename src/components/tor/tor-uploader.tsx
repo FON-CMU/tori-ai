@@ -25,12 +25,35 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
       const form = new FormData();
       form.set("file", file);
       form.set("year", String(year));
-      const response = await fetch("/api/tor/upload", { method: "POST", body: form });
-      const result = await response.json() as { error?: { message?: string } };
-      if (!response.ok) throw new Error(result.error?.message ?? "อัปโหลดไม่สำเร็จ");
+      const uploadResponse = await fetch("/api/tor/upload", { method: "POST", body: form });
+      const uploadBody = await uploadResponse.json() as {
+        data?: { id: string; year: number };
+        error?: { message?: string };
+      };
+      if (!uploadResponse.ok || !uploadBody.data) {
+        throw new Error(uploadBody.error?.message ?? "อัปโหลดไม่สำเร็จ");
+      }
+
+      setMessage({ type: "success", text: "อัปโหลดสำเร็จ กำลังอ่านข้อความจากเอกสาร…" });
+      const processResponse = await fetch(`/api/tor/${uploadBody.data.id}/process`, { method: "POST" });
+      const processBody = await processResponse.json() as { error?: { message?: string } };
+      if (!processResponse.ok) {
+        throw new Error(processBody.error?.message ?? "ประมวลผลข้อความไม่สำเร็จ");
+      }
+
+      setMessage({ type: "success", text: "อ่านข้อความแล้ว กำลังวิเคราะห์หัวข้อด้วย AI…" });
+      const analyzeResponse = await fetch(`/api/tor/${uploadBody.data.id}/analyze`, { method: "POST" });
+      const analyzeBody = await analyzeResponse.json() as {
+        data?: { topicCount: number };
+        error?: { message?: string };
+      };
+      if (!analyzeResponse.ok) {
+        throw new Error(analyzeBody.error?.message ?? "วิเคราะห์หัวข้อไม่สำเร็จ");
+      }
+
       setMessage({
         type: "success",
-        text: `อัปโหลด TOR ปี พ.ศ. ${year} สำเร็จ ระบบกำลังอ่านเอกสารและแยกหัวข้อด้วย AI`,
+        text: `พร้อมใช้งาน TOR ปี พ.ศ. ${uploadBody.data.year} · หัวข้อ ${analyzeBody.data?.topicCount ?? 0} รายการ`,
       });
       router.refresh();
     } catch (error) {
@@ -54,7 +77,9 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
         disabled={uploading}
       />
       <p className="font-medium">PDF หรือ DOCX ขนาดไม่เกิน {maxSizeMb} MB</p>
-      <p className="mt-1 text-sm text-stone-500">ไฟล์จะถูกเก็บอย่างปลอดภัยในพื้นที่ของ TORI บนเครื่องนี้</p>
+      <p className="mt-1 text-sm text-stone-500">
+        อัปโหลด → อ่านข้อความ → วิเคราะห์หัวข้อ แยกเป็นคนละคำขอ (เหมาะกับ Vercel)
+      </p>
 
       <label className="mx-auto mt-5 flex max-w-xs flex-col gap-2 text-left">
         <span className="text-sm font-medium text-stone-700">ปีของ TOR (พ.ศ.)</span>
@@ -78,7 +103,7 @@ export function TorUploader({ maxSizeMb }: { maxSizeMb: number }) {
         disabled={uploading}
         className="mt-5 rounded-xl bg-teal-700 px-5 py-3 text-white hover:bg-teal-800 disabled:cursor-wait disabled:opacity-60"
       >
-        {uploading ? "กำลังอัปโหลด…" : "เลือกไฟล์ TOR"}
+        {uploading ? "กำลังดำเนินการ…" : "เลือกไฟล์ TOR"}
       </button>
       {message ? (
         <p role="status" className={`mt-3 text-sm ${message.type === "success" ? "text-emerald-700" : "text-red-700"}`}>

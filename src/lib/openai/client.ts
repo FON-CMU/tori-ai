@@ -6,6 +6,7 @@ import { zodResponseFormat, zodTextFormat } from "openai/helpers/zod";
 import type { z } from "zod";
 
 import { torExtractionSystemPrompt, workExtractionSystemPrompt } from "@/lib/ai/work-system-prompt";
+import { env } from "@/lib/env";
 import {
   normalizeTorExtraction,
   normalizeWorkExtraction,
@@ -16,6 +17,10 @@ import {
 import { resolveOpenAiSettings } from "@/server/services/ai-settings-service";
 
 type AiConfig = Awaited<ReturnType<typeof resolveOpenAiSettings>>;
+
+function aiTimeoutMs() {
+  return Math.min(env.AI_REQUEST_TIMEOUT_MS, 300_000);
+}
 
 function formatAiError(reason: unknown) {
   if (reason instanceof APIError) {
@@ -90,11 +95,52 @@ function extractJsonObject(text: string) {
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced?.[1]?.trim() ?? trimmed;
   const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    return JSON.parse(candidate.slice(start, end + 1)) as unknown;
+  if (start < 0) return JSON.parse(candidate) as unknown;
+
+  const slice = candidate.slice(start);
+  try {
+    return JSON.parse(slice) as unknown;
+  } catch {
+    // โมเดล reasoning มักตัด JSON กลางคัน — พยายามปิดวงเล็บที่ค้าง
+    const repaired = repairTruncatedJson(slice);
+    return JSON.parse(repaired) as unknown;
   }
-  return JSON.parse(candidate) as unknown;
+}
+
+function repairTruncatedJson(raw: string) {
+  let text = raw.trim();
+  // ตัดเศษหลัง comma ท้ายค้าง
+  text = text.replace(/,\s*$/, "");
+
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") stack.push(ch === "{" ? "}" : "]");
+    if (ch === "}" || ch === "]") {
+      if (stack.length && stack[stack.length - 1] === ch) stack.pop();
+    }
+  }
+  if (inString) text += "\"";
+  text = text.replace(/,\s*$/, "");
+  while (stack.length) text += stack.pop();
+  return text;
 }
 
 function compactWorkPayload(input: {
@@ -150,7 +196,7 @@ async function completeJson(
   const jsonHint = "ตอบเป็น JSON object เดียวเท่านั้น ห้ามมี markdown หรือข้อความนอก JSON";
   // gpt-5/reasoning ใช้โทเคน reasoning ก่อน content — ต้องเผื่อเยอะกว่าปกติ
   const maxTokens = options?.maxTokens
-    ?? (usesCompletionTokenParam(config.model) ? 6_144 : 2_048);
+    ?? (usesCompletionTokenParam(config.model) ? 12_288 : 2_048);
   const tokenFields = tokenLimitFields(config.model, maxTokens);
 
   // เกตเวย์ภายใน: ยิงครั้งเดียวแบบ Postman — อย่า retry timeout ซ้ำ
@@ -252,7 +298,7 @@ export async function extractTor(_userId: string, text: string) {
   const client = new OpenAI({
     apiKey: config.apiKey,
     baseURL: config.baseURL,
-    timeout: config.baseURL ? 300_000 : 240_000,
+    timeout: aiTimeoutMs(),
     maxRetries: 0,
   });
 
@@ -275,7 +321,7 @@ export async function extractTor(_userId: string, text: string) {
       payload,
       {
         preferJsonObject: true,
-        maxTokens: 8_192,
+        maxTokens: 12_288,
         normalize: (raw) => {
           const normalized = normalizeTorExtraction(raw);
           if (!normalized.topics.length) {
@@ -335,7 +381,7 @@ export async function extractWork(
   const client = new OpenAI({
     apiKey: config.apiKey,
     baseURL: config.baseURL,
-    timeout: config.baseURL ? 300_000 : 240_000,
+    timeout: aiTimeoutMs(),
     maxRetries: 0,
   });
   const content = JSON.stringify(compactWorkPayload(input));
@@ -350,7 +396,7 @@ export async function extractWork(
       content,
       {
         preferJsonObject: true,
-        maxTokens: usesCompletionTokenParam(config.model) ? 6_144 : 2_048,
+        maxTokens: usesCompletionTokenParam(config.model) ? 12_288 : 2_048,
         normalize: normalizeWorkExtraction,
       },
     );

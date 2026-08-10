@@ -15,7 +15,7 @@ FROM dependencies AS database
 COPY prisma.config.ts ./
 COPY prisma ./prisma
 RUN npm run prisma:generate
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && npm run db:seed"]
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run db:seed"]
 
 FROM dependencies AS development
 COPY . .

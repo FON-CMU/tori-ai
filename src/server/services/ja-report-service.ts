@@ -46,8 +46,8 @@ export type JaReportEntry = {
   startAtLabel: string;
   endAtLabel: string;
   totalHours: string;
-  /** ตามเงื่อนไขผลิตภัณฑ์: ฝั่ง JA ในฟอร์มเป็น 0 เสมอ */
-  hoursPerWeek: "0";
+  /** ชั่วโมงจริงของรายการ JA (ใช้แสดงในคอลัมน์ชม. ฝั่ง JA) */
+  hoursPerWeek: string;
 };
 
 export type JaReportTopicRow = {
@@ -123,8 +123,28 @@ function toJaEntry(row: {
     startAtLabel: formatDateTime(row.startAt),
     endAtLabel: formatDateTime(row.endAt),
     totalHours: row.totalHours?.toString() ?? "ไม่ระบุ",
-    hoursPerWeek: "0",
+    hoursPerWeek: formatJaHours(row.totalHours),
   };
+}
+
+export function formatJaHours(totalHours: { toString(): string } | null | undefined) {
+  if (!totalHours) return "0";
+  const value = Number(totalHours.toString());
+  return Number.isFinite(value) ? String(value) : "0";
+}
+
+export function sumTopicJaHours(jas: Array<{ totalHours: string; hoursPerWeek?: string }>) {
+  let sum = 0;
+  let counted = false;
+  for (const ja of jas) {
+    const fromHours = ja.hoursPerWeek !== undefined ? Number(ja.hoursPerWeek) : NaN;
+    const fromTotal = Number(ja.totalHours);
+    const value = Number.isFinite(fromHours) ? fromHours : fromTotal;
+    if (!Number.isFinite(value)) continue;
+    sum += value;
+    counted = true;
+  }
+  return counted ? String(sum) : "0";
 }
 
 function formatTorCell(topic: JaReportTopicRow) {

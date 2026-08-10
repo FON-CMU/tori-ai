@@ -17,7 +17,7 @@ export default async function SettingsJaPage() {
       <h1 className="mt-2 text-3xl font-semibold">รายงานผลการปฏิบัติงานจริง</h1>
       <p className="mt-2 max-w-3xl text-stone-600">
         แสดงทั้งฉบับตามฟอร์ม TOR — ซ้ายคือภาระงานตาม TOR ขวาคือผลการปฏิบัติงานจริง (JA)
-        โดยชม./สัปดาห์ฝั่ง JA เป็น 0 ตามแบบ และส่งออกได้ทั้งฉบับเป็น Word/PDF
+        โดยชม./สัปดาห์ฝั่ง JA แสดงผลรวมชั่วโมงจริงของหัวข้อ และส่งออกได้ทั้งฉบับเป็น Word/PDF
       </p>
 
       <div className="mt-6 space-y-8">

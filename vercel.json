@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["sin1"],
+  "functions": {
+    "src/app/api/chat/message/route.ts": { "maxDuration": 300 },
+    "src/app/api/tor/[id]/analyze/route.ts": { "maxDuration": 300 },
+    "src/app/api/tor/[id]/process/route.ts": { "maxDuration": 120 },
+    "src/app/api/tor/upload/route.ts": { "maxDuration": 60 }
+  }
+}

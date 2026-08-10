@@ -4,8 +4,10 @@ import { ZodError } from "zod";
 import { requireSession } from "@/lib/auth/session";
 import { ApiError, errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
-import { ingestTor } from "@/server/services/tor-processing-service";
 import { uploadTor } from "@/server/services/tor-upload-service";
+
+/** อัปโหลดอย่างเดียว — ประมวลผล/วิเคราะห์แยก request เพื่อไม่ชนเพดาน Vercel */
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   const requestId = getRequestId(request);
@@ -15,15 +17,13 @@ export async function POST(request: Request) {
     const file = form.get("file");
     if (!(file instanceof File)) throw new ApiError(400, "FILE_REQUIRED", "กรุณาเลือกไฟล์ TOR");
     const uploaded = await uploadTor(userId, file, form.get("year"));
-    const document = await ingestTor(userId, uploaded.id);
     return NextResponse.json(
       {
         data: {
-          id: document.id,
-          status: document.status,
-          year: document.year,
-          pageCount: document.pages.length,
-          topicCount: document.topics.length,
+          id: uploaded.id,
+          status: uploaded.status,
+          year: uploaded.year,
+          fileName: uploaded.fileName,
         },
         requestId,
       },

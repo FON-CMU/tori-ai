@@ -66,7 +66,10 @@ const baseUrlSchema = z.preprocess(
 );
 
 export const aiSettingsSchema = z.object({
-  apiKey: apiKeySchema,
+  apiKey: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    apiKeySchema.optional(),
+  ),
   model: modelSchema,
 });
 
@@ -93,9 +96,9 @@ const OPENAI_CHAT_MODEL_DEFAULTS = [
 
 const GOOGLE_CHAT_MODEL_DEFAULTS = [
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
   "gemini-2.5-pro",
-  "gemini-3.6-flash",
+  "gemini-2.0-flash",
+  "gemini-flash-latest",
 ];
 
 export function parseChatModelsText(raw: string | null | undefined) {

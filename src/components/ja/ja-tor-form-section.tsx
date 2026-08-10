@@ -27,6 +27,22 @@ type TopicRow = {
   jas: JaCard[];
 };
 
+function topicJaHoursTotal(jas: JaCard[]) {
+  let sum = 0;
+  let counted = false;
+  for (const ja of jas) {
+    const fromHours = Number(ja.hoursPerWeek);
+    const fromTotal = Number(ja.totalHours);
+    const value = Number.isFinite(fromHours) && fromHours > 0
+      ? fromHours
+      : fromTotal;
+    if (!Number.isFinite(value)) continue;
+    sum += value;
+    counted = true;
+  }
+  return counted ? String(sum) : "0";
+}
+
 function JaBlock({ ja }: { ja: JaCard }) {
   return (
     <div className="rounded-xl border border-teal-100 bg-teal-50/40 p-3">
@@ -118,7 +134,7 @@ export function JaTorFormSection({
               </div>
               <div className="text-sm text-stone-700 md:border-l md:border-stone-100 md:px-2 md:pt-0.5 md:text-center">
                 <span className="md:hidden text-xs text-stone-500">ชม./สัปดาห์ JA: </span>
-                0
+                {topicJaHoursTotal(topic.jas)}
               </div>
             </div>
           ))
