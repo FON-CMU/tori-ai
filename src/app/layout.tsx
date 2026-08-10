@@ -6,7 +6,11 @@ export const metadata: Metadata = {
   description: "ผู้ช่วยบันทึกการปฏิบัติงานตาม TOR",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
     <html lang="th" className="h-full antialiased">
       <body className="min-h-full flex flex-col">{children}</body>
