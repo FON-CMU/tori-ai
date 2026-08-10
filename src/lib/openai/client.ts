@@ -65,6 +65,19 @@ function tokenLimitFields(model: string, maxTokens: number) {
   return { max_tokens: maxTokens };
 }
 
+/** gpt-5/o-series: ลด reasoning เพื่อเหลือโทเคนให้ JSON และให้ตอบเร็วขึ้น */
+function reasoningEffortFields(model: string, effort: "minimal" | "low" | "medium" = "low") {
+  if (!usesCompletionTokenParam(model)) return {} as Record<string, never>;
+  // บางเกตเวย์ยังไม่ประกาศใน type ของ SDK
+  return { reasoning_effort: effort } as { reasoning_effort: typeof effort };
+}
+
+function torCompletionTokenBudget(model: string) {
+  // reasoning + JSON โครง TOR กินงบรวม — อย่าตัดเหลือ ~4k (จะได้ finish=length / content ว่าง)
+  if (usesCompletionTokenParam(model)) return 16_384;
+  return 4_096;
+}
+
 function readCompletionText(
   message: OpenAI.Chat.Completions.ChatCompletionMessage | undefined,
 ): string | null {
@@ -203,61 +216,99 @@ async function completeJson(
   user: string,
   options?: { maxTokens?: number },
 ) {
-  const jsonHint = "ตอบเป็น JSON object เดียวเท่านั้น ห้ามมี markdown หรือข้อความนอก JSON";
-  // gpt-5/reasoning ใช้โทเคน reasoning ก่อน content — ต้องเผื่อเยอะกว่าปกติ
-  const maxTokens = options?.maxTokens
+  const jsonHint =
+    "ตอบเป็น JSON object เดียวเท่านั้น ห้ามมี markdown หรือข้อความนอก JSON และอย่าคิดยาวเกินจำเป็น";
+  const baseMaxTokens =
+    options?.maxTokens
     ?? (usesCompletionTokenParam(config.model) ? 12_288 : 2_048);
-  const tokenFields = tokenLimitFields(config.model, maxTokens);
 
-  // เกตเวย์ภายใน: ยิงครั้งเดียวแบบ Postman — อย่า retry timeout ซ้ำ
-  const attempts: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming[] = config.baseURL
-    ? [
-        {
-          model: config.model,
-          messages: [
-            { role: "system", content: `${system}\n${jsonHint}` },
-            { role: "user", content: user },
-          ],
-          ...tokenFields,
-        },
-      ]
-    : [
-        {
-          model: config.model,
-          messages: [
-            { role: "system", content: `${system}\n${jsonHint}` },
-            { role: "user", content: user },
-          ],
-          response_format: { type: "json_object" },
-          temperature: 0.2,
-          ...tokenFields,
-        },
-        {
-          model: config.model,
-          messages: [
-            { role: "system", content: `${system}\n${jsonHint}` },
-            { role: "user", content: user },
-          ],
-          ...tokenFields,
-        },
-      ];
+  type Attempt = {
+    label: string;
+    body: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
+  };
+
+  const buildBody = (maxTokens: number, effort: "minimal" | "low" | "medium", withJsonObject: boolean) => {
+    const body: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
+      model: config.model,
+      messages: [
+        { role: "system", content: `${system}\n${jsonHint}` },
+        { role: "user", content: user },
+      ],
+      ...tokenLimitFields(config.model, maxTokens),
+      ...reasoningEffortFields(config.model, effort),
+    };
+    if (withJsonObject) {
+      body.response_format = { type: "json_object" };
+      body.temperature = 0.2;
+    }
+    return body;
+  };
+
+  const attempts: Attempt[] = [];
+  if (config.baseURL) {
+    attempts.push({
+      label: `gateway tokens=${baseMaxTokens} effort=low`,
+      body: buildBody(baseMaxTokens, "low", false),
+    });
+    if (usesCompletionTokenParam(config.model)) {
+      attempts.push({
+        label: `gateway tokens=${Math.min(baseMaxTokens * 2, 32_768)} effort=minimal`,
+        body: buildBody(Math.min(baseMaxTokens * 2, 32_768), "minimal", false),
+      });
+    }
+  } else {
+    attempts.push({
+      label: `openai json_object tokens=${baseMaxTokens}`,
+      body: buildBody(baseMaxTokens, "low", true),
+    });
+    attempts.push({
+      label: `openai plain tokens=${baseMaxTokens}`,
+      body: buildBody(baseMaxTokens, "low", false),
+    });
+  }
 
   const errors: string[] = [];
-  for (const body of attempts) {
+  for (const attempt of attempts) {
     try {
-      const response = await client.chat.completions.create(body);
+      const response = await client.chat.completions.create(attempt.body);
       const choice = response.choices[0];
       const text = readCompletionText(choice?.message);
       if (!text) {
         const finish = choice?.finish_reason ?? "unknown";
         const keys = choice?.message ? Object.keys(choice.message).join(",") : "none";
-        throw new Error(`AI did not return content (finish=${finish}; messageKeys=${keys})`);
+        const usage = response.usage
+          ? ` completion=${response.usage.completion_tokens ?? "?"}`
+          : "";
+        throw new Error(
+          `AI did not return content (finish=${finish}; messageKeys=${keys}${usage}; try=${attempt.label})`,
+        );
       }
       return extractJsonObject(text);
     } catch (reason) {
       const formatted = formatAiError(reason);
       errors.push(formatted);
       if (isTimeoutError(formatted)) break;
+      // เกตเวย์ไม่รองรับ reasoning_effort — ลองยิงใหม่โดยไม่มีฟิลด์นี้ครั้งเดียว
+      if (
+        /reasoning_effort|Unrecognized|unknown.?parameter|invalid.?param/i.test(formatted)
+        && attempt.body
+        && "reasoning_effort" in attempt.body
+      ) {
+        try {
+          const { reasoning_effort: _ignored, ...withoutEffort } = attempt.body as typeof attempt.body & {
+            reasoning_effort?: string;
+          };
+          const response = await client.chat.completions.create(withoutEffort);
+          const choice = response.choices[0];
+          const text = readCompletionText(choice?.message);
+          if (text) return extractJsonObject(text);
+          errors.push(
+            `AI did not return content after dropping reasoning_effort (finish=${choice?.finish_reason ?? "unknown"})`,
+          );
+        } catch (retryReason) {
+          errors.push(formatAiError(retryReason));
+        }
+      }
     }
   }
 
@@ -428,13 +479,9 @@ export async function extractTor(_userId: string, input: string | TorPageInput[]
   }
 
   const gateway = Boolean(config.baseURL);
-  // เกตเวย์ภายในช้า — ตัด prompt สั้น + จำกัดโทเคนคำตอบ แล้วแบ่งหลายรอบ
+  // เกตเวย์ภายในช้า — ตัด prompt สั้น แล้วแบ่งหลายรอบ; gpt-5 ต้องงบโทเคนสูงเพราะรวม reasoning
   const maxChars = gateway ? 10_000 : 120_000;
-  const maxTokens = gateway
-    ? 4_096
-    : usesCompletionTokenParam(config.model)
-      ? 12_288
-      : 4_096;
+  const maxTokens = torCompletionTokenBudget(config.model);
 
   let chunks = buildTorTextChunks(pages, maxChars).flatMap((chunk) =>
     splitOversizedChunk(chunk, maxChars),

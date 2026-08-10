@@ -26,53 +26,13 @@ export const workSubtypeLabel: Record<WorkSubtype, string> = {
   C_3_2: "C 3.2 พัฒนาและปรับปรุงกระบวนการทำงาน",
 };
 
-export const torExtractionSystemPrompt = `คุณช่วยอ่านเอกสาร TOR แล้วคืนโครงตามฟอร์มในไฟล์ เป็น JSON อย่างเดียว ห้ามมี markdown
+export const torExtractionSystemPrompt = `คุณช่วยอ่านเอกสาร TOR แล้วคืน JSON อย่างเดียว ห้าม markdown ห้ามคิดยาว
 
-รูปแบบที่ต้องคืน (คงลำดับตามเอกสาร ห้ามรวมหรือเรียงใหม่ตามใจ):
-{
-  "sections": [
-    {
-      "category": "ROUTINE|ASSIGNED|DEVELOPMENT",
-      "label": "3. ภาระงานเชิงพัฒนา",
-      "title": "งานเชิงพัฒนา",
-      "hoursPerWeek": null,
-      "sourcePage": 1,
-      "topics": [
-        {
-          "code": "1",
-          "title": "การพัฒนาตนเอง เช่น การเข้าร่วมประชุม/อบรม/สัมมนา/ศึกษาดูงานเพื่อพัฒนาตนเองและพัฒนางาน",
-          "description": null,
-          "hoursPerWeek": 7,
-          "sourcePage": 1,
-          "confidence": 0.9,
-          "items": [
-            {
-              "code": "1.1",
-              "title": "สนับสนุนการพัฒนา LINE OFFICIAL ACCOUNT",
-              "description": "รายละเอียดตามเอกสาร",
-              "hoursPerWeek": null
-            }
-          ]
-        }
-      ]
-    }
-  ],
-  "warnings": []
-}
+รูปแบบ:
+{"sections":[{"category":"ROUTINE|ASSIGNED|DEVELOPMENT","label":"string|null","title":"string","hoursPerWeek":null,"sourcePage":1,"topics":[{"code":"1","title":"string","description":null,"hoursPerWeek":7,"sourcePage":1,"confidence":0.9,"items":[{"code":"1.1","title":"string","description":null,"hoursPerWeek":null}]}]}],"warnings":[]}
 
-หมวด category:
-- ROUTINE = งานประจำ / หน้าที่หลัก
-- ASSIGNED = งานที่ได้รับมอบหมาย
-- DEVELOPMENT = ภาระงานเชิงพัฒนา
-
-กฎ:
-1. อ่านตามโครงเอกสาร: หมวดหลัก (section) → หัวข้อภาระงาน (topics) → รายการย่อย (items เช่น 1.1, 1.2)
-2. topics = บรรทัดภาระงานที่ใช้จับคู่ JA (เช่น "การพัฒนาตนเอง เช่น …")
-3. items = รายละเอียด/แผนงานย่อยใต้หัวข้อ ไม่ใช่รายการ JA
-4. hoursPerWeek = ค่า "ชม./สัปดาห์" ของคอลัมน์ TOR ถ้ามี
-5. ใช้เฉพาะข้อความในเอกสาร ห้ามแต่ง
-6. ถ้าไม่มีหัวข้อย่อย ให้ใส่ items เป็น []
-7. ห้ามคืน sections ว่างถ้าเอกสารมีเนื้อหางาน`;
+หมวด: ROUTINE=งานประจำ, ASSIGNED=งานที่ได้รับมอบหมาย, DEVELOPMENT=ภาระงานเชิงพัฒนา
+กฎ: คงลำดับตามเอกสาร (section→topics→items); topics=หัวข้อจับคู่ JA; items=รายการย่อย; hoursPerWeek จากคอลัมน์ ชม./สัปดาห์ ถ้ามี; ใช้เฉพาะข้อความในเอกสาร; ไม่มีหัวข้อย่อยใส่ items=[]; ห้าม sections ว่างถ้ามีเนื้อหางาน`;
 
 export const workExtractionSystemPrompt = `คุณเป็นเลขาส่วนตัวที่ช่วยบันทึกงานปฏิบัติการ (JA) ให้ผู้ใช้ เป็น JSON ตาม schema เท่านั้น
 
