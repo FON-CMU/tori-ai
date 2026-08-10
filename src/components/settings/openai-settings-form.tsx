@@ -2,6 +2,8 @@
 
 import { FormEvent, useState } from "react";
 
+import { humanizeClientError, readJsonResponse } from "@/lib/http/client-json";
+
 type Settings = {
   configured: boolean;
   suffix: string | null;
@@ -38,14 +40,14 @@ export function OpenAiSettingsForm({ initial }: { initial: Settings }) {
           baseUrl: baseUrl.trim() || undefined,
         }),
       });
-      const body = await response.json() as { data?: Settings; error?: { message?: string } };
+      const body = await readJsonResponse<{ data?: Settings; error?: { message?: string } }>(response);
       if (!response.ok || !body.data) throw new Error(body.error?.message ?? "บันทึกไม่สำเร็จ");
       setSettings(body.data);
       setBaseUrl(body.data.baseUrl ?? "");
       setApiKey("");
       setMessage({ text: "บันทึกและเลือก OpenAI-compatible เป็น provider หลักแล้ว" });
     } catch (error) {
-      setMessage({ error: true, text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" });
+      setMessage({ error: true, text: humanizeClientError(error, "บันทึกไม่สำเร็จ") });
     } finally {
       setBusy(false);
     }
@@ -57,13 +59,14 @@ export function OpenAiSettingsForm({ initial }: { initial: Settings }) {
     setMessage(null);
     try {
       const response = await fetch("/api/settings/openai", { method: "DELETE" });
+      await readJsonResponse(response).catch(() => ({}));
       if (!response.ok) throw new Error("ลบคีย์ไม่สำเร็จ");
       setSettings({ configured: false, suffix: null, model: "", baseUrl: "", fromEnv: false });
       setModel("");
       setBaseUrl("");
       setMessage({ text: "ลบ OpenAI API key ของระบบแล้ว" });
     } catch (error) {
-      setMessage({ error: true, text: error instanceof Error ? error.message : "ลบคีย์ไม่สำเร็จ" });
+      setMessage({ error: true, text: humanizeClientError(error, "ลบคีย์ไม่สำเร็จ") });
     } finally {
       setBusy(false);
     }
@@ -78,17 +81,17 @@ export function OpenAiSettingsForm({ initial }: { initial: Settings }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ provider: "OPENAI" }),
       });
-      const body = await response.json() as {
+      const body = await readJsonResponse<{
         data?: { model: string; latencyMs: number; baseURL?: string | null };
         error?: { message?: string };
-      };
+      }>(response);
       if (!response.ok || !body.data) throw new Error(body.error?.message ?? "ทดสอบไม่สำเร็จ");
       const endpoint = body.data.baseURL ? ` · ${body.data.baseURL}` : "";
       setMessage({
         text: `AI ใช้งานได้ · ${body.data.model} · ${body.data.latencyMs.toLocaleString()} ms${endpoint}`,
       });
     } catch (error) {
-      setMessage({ error: true, text: error instanceof Error ? error.message : "ทดสอบไม่สำเร็จ" });
+      setMessage({ error: true, text: humanizeClientError(error, "ทดสอบไม่สำเร็จ") });
     } finally {
       setBusy(false);
     }
@@ -131,7 +134,9 @@ export function OpenAiSettingsForm({ initial }: { initial: Settings }) {
             className="mt-2 h-12 w-full rounded-xl border border-stone-300 px-3 font-mono text-sm outline-none focus:border-teal-600"
           />
           <p className="mt-2 text-xs text-stone-500">
-            ใส่ถึง <code className="rounded bg-stone-100 px-1">/api</code> ไม่ต้องใส่ <code className="rounded bg-stone-100 px-1">/chat/completions</code>
+            ใส่เต็มรูปแบบขึ้นต้นด้วย <code className="rounded bg-stone-100 px-1">https://</code>{" "}
+            ถึง <code className="rounded bg-stone-100 px-1">/api</code> ไม่ต้องใส่{" "}
+            <code className="rounded bg-stone-100 px-1">/chat/completions</code>
             — ว่างไว้หากใช้ OpenAI ตรง
           </p>
         </div>

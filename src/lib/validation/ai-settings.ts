@@ -28,6 +28,9 @@ export function normalizeAiModelId(value: string) {
 /** Accept full Postman URLs and normalize to OpenAI SDK baseURL. */
 export function normalizeOpenAiBaseUrl(value: string) {
   let url = value.trim().replace(/\/+$/, "");
+  if (url && !/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    url = `https://${url}`;
+  }
   url = url.replace(/\/chat\/completions$/i, "");
   url = url.replace(/\/completions$/i, "");
   return url.replace(/\/+$/, "");
@@ -55,13 +58,16 @@ const apiKeySchema = z
   .refine((value) => !/\s/.test(value), "API key ต้องไม่มีช่องว่าง");
 
 const baseUrlSchema = z.preprocess(
-  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  (value) => {
+    if (typeof value !== "string") return value;
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    return normalizeOpenAiBaseUrl(trimmed);
+  },
   z
     .string()
-    .trim()
-    .url("Base URL ไม่ถูกต้อง")
+    .url("Base URL ไม่ถูกต้อง ต้องขึ้นต้นด้วย https:// เช่น https://chatgen.scmc.cmu.ac.th/api")
     .max(500)
-    .transform(normalizeOpenAiBaseUrl)
     .optional(),
 );
 
