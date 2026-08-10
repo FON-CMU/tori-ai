@@ -2,6 +2,8 @@
 
 import { FormEvent, useState } from "react";
 
+import { humanizeClientError, readJsonResponse } from "@/lib/http/client-json";
+
 type Settings = {
   configured: boolean;
   suffix: string | null;
@@ -34,13 +36,13 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
           model,
         }),
       });
-      const body = await response.json() as { data?: Settings; error?: { message?: string } };
+      const body = await readJsonResponse<{ data?: Settings; error?: { message?: string } }>(response);
       if (!response.ok || !body.data) throw new Error(body.error?.message ?? "บันทึกไม่สำเร็จ");
       setSettings(body.data);
       setApiKey("");
       setMessage({ text: "บันทึกและเลือก Google AI Studio เป็น provider หลักของระบบแล้ว" });
     } catch (error) {
-      setMessage({ error: true, text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" });
+      setMessage({ error: true, text: humanizeClientError(error, "บันทึกไม่สำเร็จ") });
     } finally {
       setBusy(false);
     }
@@ -50,6 +52,7 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
     if (!window.confirm("ลบ Google AI Studio API key ของระบบหรือไม่?")) return;
     setBusy(true);
     const response = await fetch("/api/settings/google-ai-studio", { method: "DELETE" });
+    await readJsonResponse(response).catch(() => ({}));
     if (response.ok) {
       setSettings({ configured: false, suffix: null, model: "", active: false });
       setMessage({ text: "ลบ API key ของระบบแล้ว" });
@@ -68,11 +71,11 @@ export function GoogleAiSettingsForm({ initial }: { initial: Settings }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ provider: "GOOGLE_AI_STUDIO" }),
       });
-      const body = await response.json() as { data?: { model: string; latencyMs: number }; error?: { message?: string } };
+      const body = await readJsonResponse<{ data?: { model: string; latencyMs: number }; error?: { message?: string } }>(response);
       if (!response.ok || !body.data) throw new Error(body.error?.message ?? "ทดสอบไม่สำเร็จ");
       setMessage({ text: `AI ใช้งานได้ · ${body.data.model} · ${body.data.latencyMs.toLocaleString()} ms` });
     } catch (error) {
-      setMessage({ error: true, text: error instanceof Error ? error.message : "ทดสอบไม่สำเร็จ" });
+      setMessage({ error: true, text: humanizeClientError(error, "ทดสอบไม่สำเร็จ") });
     } finally {
       setBusy(false);
     }
