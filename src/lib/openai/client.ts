@@ -8,18 +8,28 @@ import type { z } from "zod";
 import { torExtractionSystemPrompt, workExtractionSystemPrompt } from "@/lib/ai/work-system-prompt";
 import { env } from "@/lib/env";
 import {
+  mergeTorExtractions,
   normalizeTorExtraction,
   normalizeWorkExtraction,
   torExtractionSchema,
   workExtractionSchema,
+  type TorExtraction,
   type WorkExtraction,
 } from "@/lib/validation/ai";
 import { resolveOpenAiSettings } from "@/server/services/ai-settings-service";
 
 type AiConfig = Awaited<ReturnType<typeof resolveOpenAiSettings>>;
 
+type TorPageInput = { pageNumber: number; text: string };
+
 function aiTimeoutMs() {
   return Math.min(env.AI_REQUEST_TIMEOUT_MS, 300_000);
+}
+
+/** งบเวลาต่อ chunk ให้รวมไม่เกินเพดานฟังก์ชัน Vercel ~300s */
+function perChunkTimeoutMs(chunkCount: number) {
+  const budget = Math.min(aiTimeoutMs(), 280_000);
+  return Math.max(45_000, Math.floor(budget / Math.max(chunkCount, 1)));
 }
 
 function formatAiError(reason: unknown) {
@@ -293,45 +303,90 @@ async function parseWithChatCompletions<TSchema, TResult = TSchema>(
   return normalize(await completeJson(client, config, system, user, { maxTokens: options?.maxTokens }));
 }
 
-export async function extractTor(_userId: string, text: string) {
-  const config = await resolveOpenAiSettings();
-  const client = new OpenAI({
-    apiKey: config.apiKey,
-    baseURL: config.baseURL,
-    timeout: aiTimeoutMs(),
-    maxRetries: 0,
-  });
+function formatTorPageBlock(page: TorPageInput) {
+  return `[หน้า ${page.pageNumber}]\n${page.text.trim()}`;
+}
 
-  // เกตเวย์ภายในมักช้าและมี limit ขนาด prompt
-  const maxChars = config.baseURL ? 24_000 : 120_000;
-  let payload = text.trim();
-  if (payload.length > maxChars) {
-    const head = Math.floor(maxChars * 0.7);
-    const tail = maxChars - head - 80;
-    payload = `${payload.slice(0, head)}\n\n[...ตัดข้อความกลางเอกสาร...]\n\n${payload.slice(-tail)}`;
+function pagesFromTorInput(input: string | TorPageInput[]): TorPageInput[] {
+  if (Array.isArray(input)) {
+    return input
+      .map((page) => ({ pageNumber: page.pageNumber, text: page.text.trim() }))
+      .filter((page) => page.text.length > 0);
   }
+  const trimmed = input.trim();
+  if (!trimmed) return [];
+  const parts = trimmed.split(/\n\n(?=\[หน้า\s+\d+\])/);
+  if (parts.length > 1) {
+    return parts.map((part, index) => {
+      const match = part.match(/^\[หน้า\s+(\d+)\]\n?([\s\S]*)$/);
+      if (!match) return { pageNumber: index + 1, text: part.trim() };
+      return { pageNumber: Number(match[1]), text: match[2].trim() };
+    });
+  }
+  return [{ pageNumber: 1, text: trimmed }];
+}
+
+function buildTorTextChunks(pages: TorPageInput[], maxChars: number) {
+  if (!pages.length) return [] as string[];
+  const chunks: string[] = [];
+  let current = "";
+  for (const page of pages) {
+    const block = formatTorPageBlock(page);
+    if (current && current.length + block.length + 2 > maxChars) {
+      chunks.push(current);
+      current = block;
+      continue;
+    }
+    current = current ? `${current}\n\n${block}` : block;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function splitOversizedChunk(text: string, maxChars: number) {
+  if (text.length <= maxChars) return [text];
+  const parts: string[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    parts.push(text.slice(cursor, cursor + maxChars));
+    cursor += maxChars;
+  }
+  return parts;
+}
+
+async function extractTorChunk(
+  client: OpenAI,
+  config: AiConfig,
+  payload: string,
+  options: { maxTokens: number; label?: string },
+) {
+  const userPayload = options.label
+    ? `${options.label}\n\n${payload}`
+    : payload;
 
   if (config.apiStyle === "chat") {
-    const parsed = await parseWithChatCompletions(
+    return parseWithChatCompletions(
       client,
       config,
       torExtractionSchema,
       "tor_extraction",
       torExtractionSystemPrompt,
-      payload,
+      userPayload,
       {
         preferJsonObject: true,
-        maxTokens: 12_288,
+        maxTokens: options.maxTokens,
         normalize: (raw) => {
           const normalized = normalizeTorExtraction(raw);
           if (!normalized.topics.length) {
-            console.error("[tor] empty topics after normalize, raw keys:", raw && typeof raw === "object" ? Object.keys(raw as object) : typeof raw);
+            console.error(
+              "[tor] empty topics after normalize, raw keys:",
+              raw && typeof raw === "object" ? Object.keys(raw as object) : typeof raw,
+            );
           }
           return normalized;
         },
       },
     );
-    return parsed;
   }
 
   try {
@@ -339,7 +394,7 @@ export async function extractTor(_userId: string, text: string) {
       model: config.model,
       store: config.store,
       instructions: torExtractionSystemPrompt,
-      input: payload,
+      input: userPayload,
       text: { format: zodTextFormat(torExtractionSchema, "tor_extraction") },
     });
     if (!response.output_parsed) throw new Error("AI did not return a valid TOR extraction");
@@ -352,9 +407,10 @@ export async function extractTor(_userId: string, text: string) {
         torExtractionSchema,
         "tor_extraction",
         torExtractionSystemPrompt,
-        payload,
+        userPayload,
         {
           preferJsonObject: true,
+          maxTokens: options.maxTokens,
           normalize: normalizeTorExtraction,
         },
       );
@@ -362,6 +418,88 @@ export async function extractTor(_userId: string, text: string) {
       throw new Error(`${formatAiError(primaryError)} | ${formatAiError(fallbackError)}`);
     }
   }
+}
+
+export async function extractTor(_userId: string, input: string | TorPageInput[]) {
+  const config = await resolveOpenAiSettings();
+  const pages = pagesFromTorInput(input);
+  if (!pages.length) {
+    return { topics: [], warnings: ["เอกสารไม่มีข้อความให้วิเคราะห์"] } satisfies TorExtraction;
+  }
+
+  const gateway = Boolean(config.baseURL);
+  // เกตเวย์ภายในช้า — ตัด prompt สั้น + จำกัดโทเคนคำตอบ แล้วแบ่งหลายรอบ
+  const maxChars = gateway ? 10_000 : 120_000;
+  const maxTokens = gateway
+    ? 4_096
+    : usesCompletionTokenParam(config.model)
+      ? 12_288
+      : 4_096;
+
+  let chunks = buildTorTextChunks(pages, maxChars).flatMap((chunk) =>
+    splitOversizedChunk(chunk, maxChars),
+  );
+  if (!chunks.length) chunks = [formatTorPageBlock(pages[0]!)];
+
+  // ถ้ายังชิ้นเดียวและยาวมาก ให้ผ่าครึ่งเพื่อลดโอกาส timeout
+  if (gateway && chunks.length === 1 && (chunks[0]?.length ?? 0) > maxChars * 0.7) {
+    chunks = splitOversizedChunk(chunks[0]!, Math.ceil((chunks[0]?.length ?? 0) / 2));
+  }
+
+  const timeout = perChunkTimeoutMs(chunks.length);
+  const client = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: config.baseURL,
+    timeout,
+    maxRetries: 0,
+  });
+
+  console.info(
+    "[tor] extractTor chunks:",
+    chunks.length,
+    "timeoutMs:",
+    timeout,
+    "maxTokens:",
+    maxTokens,
+    "gateway:",
+    gateway,
+  );
+
+  const results: TorExtraction[] = [];
+  const errors: string[] = [];
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index]!;
+    const label =
+      chunks.length > 1
+        ? `นี่คือส่วนที่ ${index + 1}/${chunks.length} ของเอกสาร TOR — สกัดเฉพาะหัวข้อที่ปรากฏในส่วนนี้`
+        : undefined;
+    try {
+      results.push(await extractTorChunk(client, config, chunk, { maxTokens, label }));
+    } catch (reason) {
+      const formatted = formatAiError(reason);
+      errors.push(`chunk ${index + 1}/${chunks.length}: ${formatted}`);
+      console.error("[tor] extractTor chunk failed:", formatted);
+      // ถ้าทุก chunk ล้ม ให้โยน; ถ้าได้บางส่วนแล้วไปรวมต่อ
+      if (!results.length && index === chunks.length - 1) {
+        throw new Error(
+          `model=${config.model}; baseURL=${config.baseURL ?? "openai"}; ${errors.join(" | ")}`,
+        );
+      }
+    }
+  }
+
+  if (!results.length) {
+    throw new Error(
+      `model=${config.model}; baseURL=${config.baseURL ?? "openai"}; ${errors.join(" | ") || "no TOR chunks succeeded"}`,
+    );
+  }
+
+  const merged = mergeTorExtractions(results);
+  if (errors.length) {
+    merged.warnings.push(`วิเคราะห์บางส่วนไม่สำเร็จ (${errors.length} ส่วน) — ผลอาจไม่ครบ`);
+  }
+  return merged;
 }
 
 export async function extractWork(

@@ -489,6 +489,27 @@ export function normalizeTorExtraction(raw: unknown): TorExtraction {
   };
 }
 
+/** รวมผล extract TOR จากหลาย chunk แล้วตัดหัวข้อซ้ำ */
+export function mergeTorExtractions(parts: TorExtraction[]): TorExtraction {
+  const unique = new Map<string, TorExtractionTopic>();
+  const warnings: string[] = [];
+  let order = 0;
+
+  for (const part of parts) {
+    warnings.push(...part.warnings);
+    for (const topic of [...part.topics].sort((a, b) => a.sortOrder - b.sortOrder)) {
+      const before = unique.size;
+      pushUniqueTopic(unique, { ...topic, sortOrder: order });
+      if (unique.size > before) order += 1;
+    }
+  }
+
+  return {
+    topics: [...unique.values()].sort((a, b) => a.sortOrder - b.sortOrder),
+    warnings: [...new Set(warnings.map((item) => item.trim()).filter(Boolean))],
+  };
+}
+
 function categoryLabelFallback(category: z.infer<typeof categorySchema>) {
   if (category === "ROUTINE") return "1. งานประจำ";
   if (category === "ASSIGNED") return "2. งานที่ได้รับมอบหมาย";

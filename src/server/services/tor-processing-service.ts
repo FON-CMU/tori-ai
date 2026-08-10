@@ -125,7 +125,10 @@ export async function analyzeTor(userId: string, torDocumentId: string, options?
   try {
     const extraction = await extractTor(
       userId,
-      document.pages.map((page) => `[หน้า ${page.pageNumber}]\n${page.extractedText}`).join("\n\n"),
+      document.pages.map((page) => ({
+        pageNumber: page.pageNumber,
+        text: page.extractedText,
+      })),
     );
     console.info("[tor] extractTor topics:", extraction.topics.length, "warnings:", extraction.warnings.length);
     if (!extraction.topics.length) throw new Error("NO_TOPICS");

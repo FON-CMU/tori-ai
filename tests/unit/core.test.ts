@@ -11,7 +11,7 @@ import {
   parseThaiDateToISO,
   parseTimeRange,
 } from "@/lib/date";
-import { normalizeTorExtraction, normalizeWorkExtraction } from "@/lib/validation/ai";
+import { mergeTorExtractions, normalizeTorExtraction, normalizeWorkExtraction } from "@/lib/validation/ai";
 import { isDataQueryIntent } from "@/lib/chat/data-query-intent";
 import { normalizeAiModelId, normalizeOpenAiBaseUrl, matchAllowedModel, resolveChatModelCatalog } from "@/lib/validation/ai-settings";
 import {
@@ -305,6 +305,39 @@ describe("TORI core business rules", () => {
     expect(item?.code).toBe("1.1");
     expect(item?.matchable).toBe(false);
     expect(item?.parentKey).toBe(topic?.selfKey);
+  });
+  it("merges TOR extraction chunks and dedupes topics", () => {
+    const first = normalizeTorExtraction({
+      sections: [
+        {
+          category: "ROUTINE",
+          label: "1. งานประจำ",
+          title: "งานประจำ",
+          topics: [{ code: "1", title: "งานธุรการ", confidence: 0.9, items: [] }],
+        },
+      ],
+      warnings: ["หน้า 1 ไม่ชัด"],
+    });
+    const second = normalizeTorExtraction({
+      sections: [
+        {
+          category: "ROUTINE",
+          label: "1. งานประจำ",
+          title: "งานประจำ",
+          topics: [{ code: "1", title: "งานธุรการ", confidence: 0.8, items: [] }],
+        },
+        {
+          category: "DEVELOPMENT",
+          label: "3. ภาระงานเชิงพัฒนา",
+          title: "งานเชิงพัฒนา",
+          topics: [{ code: "1", title: "การพัฒนาตนเอง", confidence: 0.9, items: [] }],
+        },
+      ],
+      warnings: [],
+    });
+    const merged = mergeTorExtractions([first, second]);
+    expect(merged.topics.filter((topic) => topic.kind === "TOPIC")).toHaveLength(2);
+    expect(merged.warnings).toEqual(["หน้า 1 ไม่ชัด"]);
   });
   it("detects natural-language JA count questions as data queries", () => {
     expect(isDataQueryIntent("ตอนนี้มีหัวข้อรายงาน ja กี่เรื่องแล้ว")).toBe(true);
