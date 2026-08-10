@@ -3,6 +3,7 @@ import "server-only";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { NextResponse } from "next/server";
 
 import { env } from "@/lib/env";
 import { ApiError } from "@/lib/http/api-error";
@@ -21,9 +22,27 @@ export async function createSessionToken(session: Session) {
   return new SignJWT(session).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(`${MAX_AGE}s`).sign(secret());
 }
 
+export function sessionCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: MAX_AGE,
+  };
+}
+
 export async function setSessionCookie(session: Session) {
   const token = await createSessionToken(session);
-  (await cookies()).set(SESSION_COOKIE, token, { httpOnly: true, secure: env.NODE_ENV === "production", sameSite: "lax", path: "/", maxAge: MAX_AGE });
+  (await cookies()).set(SESSION_COOKIE, token, sessionCookieOptions());
+}
+
+/** ติด session cookie บน redirect response โดยตรง (กัน cookie หายตอน NextResponse.redirect) */
+export async function redirectWithSession(url: string | URL, session: Session) {
+  const response = NextResponse.redirect(url);
+  const token = await createSessionToken(session);
+  response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
+  return response;
 }
 
 export async function readSessionToken(token?: string): Promise<Session | null> {

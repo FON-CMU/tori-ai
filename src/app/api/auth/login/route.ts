@@ -1,12 +1,29 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { createAuthorizationUrl } from "@/lib/auth/provider";
+
+import { createAuthorizationUrl, isCmuConfigured } from "@/lib/auth/provider";
+
+const oidcCookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const,
+  path: "/",
+  maxAge: 600,
+};
 
 export async function GET(request: Request) {
+  if (!isCmuConfigured()) {
+    return NextResponse.redirect(new URL("/login?error=cmu_not_configured", request.url));
+  }
+
   const state = crypto.randomUUID();
   const nonce = crypto.randomUUID();
-  const jar = await cookies();
-  const options = { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" as const, path: "/", maxAge: 600 };
-  jar.set("tori_oidc_state", state, options); jar.set("tori_oidc_nonce", nonce, options);
-  return NextResponse.redirect(await createAuthorizationUrl(state, nonce) ?? new URL("/login", request.url));
+
+  try {
+    const response = NextResponse.redirect(await createAuthorizationUrl(state, nonce));
+    response.cookies.set("tori_oidc_state", state, oidcCookieOptions);
+    response.cookies.set("tori_oidc_nonce", nonce, oidcCookieOptions);
+    return response;
+  } catch {
+    return NextResponse.redirect(new URL("/login?error=cmu_start_failed", request.url));
+  }
 }

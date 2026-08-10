@@ -19,15 +19,83 @@ export async function confirmJa(userId: string, raw: unknown) {
     include: { torDocument: true },
   });
   if (!topic) throw new ApiError(400, "INVALID_TOR_TOPIC", "หัวข้อ TOR ไม่ใช่หัวข้อที่ใช้งานอยู่ของคุณ");
-  const duplicate = await prisma.jaRecord.findFirst({ where: { userId, torTopicId: topic.id, startAt: input.startAt, endAt: input.endAt, status: { not: "ARCHIVED" } } });
+
+  const scheduleSkipped = Boolean(input.scheduleSkipped) || (!input.startAt && !input.endAt);
+  const startAt = input.startAt ?? null;
+  const endAt = input.endAt ?? null;
+  const totalHours = scheduleSkipped && (input.totalHours === null || input.totalHours === undefined)
+    ? null
+    : input.totalHours ?? null;
+
+  const duplicate = scheduleSkipped
+    ? await prisma.jaRecord.findFirst({
+        where: {
+          userId,
+          torTopicId: topic.id,
+          workTitle: input.workTitle,
+          startAt: null,
+          endAt: null,
+          status: { not: "ARCHIVED" },
+        },
+      })
+    : await prisma.jaRecord.findFirst({
+        where: {
+          userId,
+          torTopicId: topic.id,
+          startAt: startAt!,
+          endAt: endAt!,
+          status: { not: "ARCHIVED" },
+        },
+      });
   if (duplicate) throw new ApiError(409, "DUPLICATE_JA", "พบรายการงานที่มีเวลาและหัวข้อเดียวกัน");
+
+  const yearAnchor = startAt ?? new Date();
   return prisma.$transaction(async (tx) => {
-    const count = await tx.jaRecord.count({ where: { userId, createdAt: { gte: new Date(Date.UTC(input.startAt.getUTCFullYear(), 0, 1)) } } });
-    const runningNumber = `JA-${input.startAt.getUTCFullYear()}-${String(count + 1).padStart(6, "0")}`;
-    const record = await tx.jaRecord.create({ data: { ...input, totalHours: new Prisma.Decimal(input.totalHours), runningNumber, userId, torDocumentId: topic.torDocumentId, status: "CONFIRMED", confirmedAt: new Date() } });
+    const count = await tx.jaRecord.count({
+      where: {
+        userId,
+        createdAt: { gte: new Date(Date.UTC(yearAnchor.getUTCFullYear(), 0, 1)) },
+      },
+    });
+    const runningNumber = `JA-${yearAnchor.getUTCFullYear()}-${String(count + 1).padStart(6, "0")}`;
+    const record = await tx.jaRecord.create({
+      data: {
+        workTitle: input.workTitle,
+        category: input.category,
+        torTopicId: input.torTopicId,
+        description: input.description,
+        relatedUnit: input.relatedUnit ?? null,
+        location: input.location ?? null,
+        startAt,
+        endAt,
+        totalHours: totalHours === null || totalHours === undefined ? null : new Prisma.Decimal(totalHours),
+        result: input.result,
+        runningNumber,
+        userId,
+        torDocumentId: topic.torDocumentId,
+        status: "CONFIRMED",
+        confirmedAt: new Date(),
+      },
+    });
     const snapshot = JSON.parse(JSON.stringify(record)) as Prisma.InputJsonValue;
-    await tx.jaRecordVersion.create({ data: { jaRecordId: record.id, version: 1, snapshotJson: snapshot, changedBy: userId, changeReason: "ยืนยันรายการ" } });
-    await tx.auditLog.create({ data: { actorId: userId, action: "JA_CONFIRMED", objectType: "JaRecord", objectId: record.id, afterJson: snapshot } });
+    await tx.jaRecordVersion.create({
+      data: {
+        jaRecordId: record.id,
+        version: 1,
+        snapshotJson: snapshot,
+        changedBy: userId,
+        changeReason: scheduleSkipped ? "ยืนยันรายการ (ไม่ระบุวันเวลา)" : "ยืนยันรายการ",
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "JA_CONFIRMED",
+        objectType: "JaRecord",
+        objectId: record.id,
+        afterJson: snapshot,
+      },
+    });
     return record;
   });
 }

@@ -40,7 +40,8 @@ Anything touching the DB, secrets, or a third-party SDK starts with `import "ser
 
 ## Auth and ownership
 
-- Session = HS256 JWT (`jose`) in the httpOnly `tori_session` cookie, payload `{ userId, unitId, roles }`, 8h. [src/lib/auth/session.ts](src/lib/auth/session.ts)
+- Session = HS256 JWT (`jose`) in the httpOnly `tori_session` cookie, payload `{ userId, unitId, roles }`, 8h. [src/lib/auth/session.ts](src/lib/auth/session.ts). In a route handler that redirects, use `redirectWithSession()` — `setSessionCookie()` writes through `cookies()`, which a `NextResponse.redirect` does not carry.
+- Three sign-in paths land on the same `upsertIdentity(profile: IdentityProfile)` ([src/lib/auth/types.ts](src/lib/auth/types.ts)): Microsoft Entra (`ENTRA_*`), CMU OIDC (`CMU_*`), and the demo login. `profile.suggestedRoles` decides the roles granted — omit it and the account gets `EMPLOYEE` only. Roles are never revoked on re-login, so a missing group claim cannot lock an admin out.
 - [src/proxy.ts](src/proxy.ts) is this Next version's middleware entry point (`export function proxy` + `config.matcher`). It only checks cookie *presence* and stamps `x-request-id` — it is not authorization.
 - Use `requireSession()` in route handlers (throws `ApiError` 401) and `requirePageSession()` in server components (redirects to `/login`). Admin-only: `requireAdminSession()` / `requireAdminPageSession()`.
 - **Every owner-scoped query must include `userId` in the `where` clause** — see the `findFirst({ where: { id, userId } })` pattern throughout the services. Role checks live in [src/server/policies/ownership.ts](src/server/policies/ownership.ts). UI visibility is never treated as authorization.
@@ -56,6 +57,7 @@ Success: `{ data, requestId }`. Failure: throw `ApiError(status, code, thaiMessa
 3. **Chat** — `sendChatMessage` first tries `tryHandleChatCommand` (deterministic Thai commands: ช่วยเหลือ, counts, ดู TOR, ส่งออก PDF, ลบแชท, navigation…) *before* any AI call, then requires at least one active TOR topic, then calls `extractWork` and merges the result into the conversation's single `WorkDraft`. [src/server/services/chat-service.ts](src/server/services/chat-service.ts)
 4. **Draft completeness is decided server-side, not by the model.** `requiredFieldsForSubtype(workSubtype)` drives which fields are mandatory (`B_2_1`/`B_2_2` need `location`, `B_2_3` needs `relatedUnit`, `C_3_1` needs `location` + `competency`). The system prompts are deliberately short because of this — put new rules in [src/lib/validation/work.ts](src/lib/validation/work.ts), not in the prompt. Draft-only fields (`workSubtype`, `competency`, `eventDate`, `startTime`, `endTime`) are accumulated across turns inside `WorkDraft.confirmedFieldsJson`.
 5. **Confirm** — `confirmJa` re-validates, rejects duplicates, and in one transaction writes `JaRecord` (+ `runningNumber` `JA-<year>-000001`), `JaRecordVersion` v1, and an `AuditLog` row. Deletes are archives, never row deletions, and also write a version + audit row.
+   A JA may be saved with **no schedule at all** (`isSkipScheduleIntent` → `scheduleSkipped`), so `startAt`, `endAt` and `totalHours` are **nullable** — the duplicate check switches to `workTitle` + null times, `runningNumber` falls back to the current year, and every reader must tolerate null (`formatDateTime` and `sumJaHours` already render/count these as `ไม่ระบุ`/0).
 6. **Export** — [ja-report-service.ts](src/server/services/ja-report-service.ts) builds the report model; [ja-export-service.ts](src/server/services/ja-export-service.ts) renders it as a 4-column TOR/JA table via `docx` and `pdfkit`, embedding the Thai fonts in [assets/fonts/](assets/fonts/) (`process.cwd()`-relative, so they must ship with the runtime image).
 
 ## AI configuration
@@ -78,7 +80,7 @@ UI strings, AI replies, and error messages are Thai; identifiers and log events 
 
 `STORAGE_DRIVER` picks the `objectStorage` implementation: `local` writes to `LOCAL_STORAGE_PATH`, `vercel-blob` needs `BLOB_READ_WRITE_TOKEN` and a **private** store. Serverless hosts have no durable filesystem, so `local` there breaks the retry path in `processTor` — the one place a stored file is read back in a later request.
 
-`POST /api/auth/mock` (the demo login) 404s unless `NODE_ENV=development`, or both `ALLOW_MOCK_LOGIN` and `MOCK_LOGIN_PASSWORD` are set. It signs in as the seeded ADMIN account; delete it once CMU OIDC is configured.
+`POST /api/auth/mock` (the demo login) 404s unless `NODE_ENV=development`, or both `ALLOW_MOCK_LOGIN` and `MOCK_LOGIN_PASSWORD` are set. It signs in as the seeded ADMIN account; delete it once Entra or CMU OIDC is configured. The gate in [login/page.tsx](src/app/(auth)/login/page.tsx) must stay identical to the route's, or the form renders against a 404.
 
 ## UI
 

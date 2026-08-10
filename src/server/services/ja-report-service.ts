@@ -23,7 +23,8 @@ export function extractCompetency(result: string) {
   return result.slice(index + competencyPrefix.length).trim() || null;
 }
 
-function formatDateTime(value: Date) {
+function formatDateTime(value: Date | null | undefined) {
+  if (!value) return "ไม่ระบุ";
   return value.toLocaleString("th-TH", {
     timeZone: "Asia/Bangkok",
     dateStyle: "medium",
@@ -40,8 +41,8 @@ export type JaReportEntry = {
   location: string | null;
   relatedUnit: string | null;
   competency: string | null;
-  startAt: Date;
-  endAt: Date;
+  startAt: Date | null;
+  endAt: Date | null;
   startAtLabel: string;
   endAtLabel: string;
   totalHours: string;
@@ -103,9 +104,9 @@ function toJaEntry(row: {
   location: string | null;
   relatedUnit: string | null;
   result: string;
-  startAt: Date;
-  endAt: Date;
-  totalHours: { toString(): string };
+  startAt: Date | null;
+  endAt: Date | null;
+  totalHours: { toString(): string } | null;
 }): JaReportEntry {
   return {
     id: row.id,
@@ -119,7 +120,7 @@ function toJaEntry(row: {
     endAt: row.endAt,
     startAtLabel: formatDateTime(row.startAt),
     endAtLabel: formatDateTime(row.endAt),
-    totalHours: row.totalHours.toString(),
+    totalHours: row.totalHours?.toString() ?? "ไม่ระบุ",
   };
 }
 

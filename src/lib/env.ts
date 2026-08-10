@@ -17,6 +17,14 @@ const serverEnvSchema = z.object({
   CMU_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
   CMU_ISSUER: z.preprocess(emptyToUndefined, z.string().url().optional()),
   CMU_REDIRECT_URI: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  ENTRA_TENANT_ID: z.preprocess(emptyToUndefined, z.string().optional()),
+  ENTRA_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().optional()),
+  ENTRA_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
+  ENTRA_REDIRECT_URI: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  /** อีเมลที่ถือว่าเป็น ADMIN คั่นด้วยจุลภาคหรือขึ้นบรรทัดใหม่ */
+  ENTRA_ADMIN_EMAILS: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** Object ID ของ Entra group ที่ถือว่าเป็น ADMIN คั่นด้วยจุลภาคหรือขึ้นบรรทัดใหม่ */
+  ENTRA_ADMIN_GROUP_IDS: z.preprocess(emptyToUndefined, z.string().optional()),
   OPENAI_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   OPENAI_MODEL: z.preprocess(emptyToUndefined, z.string().optional()),
   OPENAI_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),

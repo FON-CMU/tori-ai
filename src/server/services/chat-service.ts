@@ -16,15 +16,21 @@ import {
 import { ApiError } from "@/lib/http/api-error";
 import { extractWork } from "@/lib/openai/client";
 import { prisma } from "@/lib/prisma";
-import { workSubtypeSchema } from "@/lib/validation/ai";
+import { normalizeWorkExtraction, workSubtypeSchema } from "@/lib/validation/ai";
 import {
+  buildDraftProgressAck,
+  buildHeuristicWorkExtraction,
   buildMissingFieldQuestion,
+  composeCollectingReply,
   deriveCompetency,
   deriveDescription,
   deriveWorkTitle,
   findMissingFields,
   inferCategoryFromWorkText,
   inferSubtypeFromWorkText,
+  isSaveAsIsIntent,
+  isSkipScheduleIntent,
+  onlyScheduleFieldsMissing,
   parseCategoryAnswer,
 } from "@/lib/validation/work";
 import { resolveOpenAiSettings } from "@/server/services/ai-settings-service";
@@ -43,11 +49,19 @@ type DraftMeta = {
   eventDate: string | null;
   startTime: string | null;
   endTime: string | null;
+  scheduleSkipped: boolean;
 };
 
 function readDraftMeta(value: Prisma.JsonValue | null | undefined): DraftMeta {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { workSubtype: null, competency: null, eventDate: null, startTime: null, endTime: null };
+    return {
+      workSubtype: null,
+      competency: null,
+      eventDate: null,
+      startTime: null,
+      endTime: null,
+      scheduleSkipped: false,
+    };
   }
   const record = value as Record<string, unknown>;
   const subtypeParse = workSubtypeSchema.safeParse(record.workSubtype);
@@ -59,6 +73,7 @@ function readDraftMeta(value: Prisma.JsonValue | null | undefined): DraftMeta {
     eventDate: asText("eventDate"),
     startTime: normalizeTimeHm(asText("startTime")),
     endTime: normalizeTimeHm(asText("endTime")),
+    scheduleSkipped: record.scheduleSkipped === true,
   };
 }
 
@@ -149,7 +164,8 @@ function isConfirmIntent(message: string) {
   );
 }
 
-function formatThaiDateTime(value: Date | null) {
+function formatThaiDateTime(value: Date | null, scheduleSkipped = false) {
+  if (scheduleSkipped && !value) return "ไม่ระบุ";
   if (!value) return "-";
   return value.toLocaleString("th-TH", {
     timeZone: "Asia/Bangkok",
@@ -237,8 +253,10 @@ function buildReviewMessage(input: {
   endAt: Date | null;
   totalHours: number | null;
   result: string | null;
+  scheduleSkipped?: boolean;
 }) {
   const isC31 = input.workSubtype === "C_3_1";
+  const skipped = Boolean(input.scheduleSkipped);
   const lines = [
     "สรุปร่างผลการปฏิบัติงานจริง (JA) ให้ตรวจสอบก่อนยืนยัน:",
     `• ชื่องาน: ${input.workTitle ?? "-"}`,
@@ -255,12 +273,15 @@ function buildReviewMessage(input: {
     lines.push(`• ความรู้/ทักษะ/สมรรถนะ: ${input.competency ?? "-"}`);
   }
   lines.push(
-    `• เริ่ม: ${formatThaiDateTime(input.startAt)}`,
-    `• สิ้นสุด: ${formatThaiDateTime(input.endAt)}`,
-    `• ชั่วโมง: ${input.totalHours ?? "-"}`,
+    `• เริ่ม: ${formatThaiDateTime(input.startAt, skipped)}`,
+    `• สิ้นสุด: ${formatThaiDateTime(input.endAt, skipped)}`,
+    `• ชั่วโมง: ${skipped && input.totalHours === null ? "ไม่ระบุ" : (input.totalHours ?? "-")}`,
   );
   if (!isC31) {
     lines.push(`• ผลลัพธ์: ${input.result ?? "-"}`);
+  }
+  if (skipped) {
+    lines.push("• หมายเหตุ: บันทึกโดยไม่ระบุวันและช่วงเวลา ตามที่ผู้ใช้ยืนยัน");
   }
   lines.push(
     "",
@@ -331,12 +352,17 @@ function serializeDraft(draft: {
     competency: meta.competency,
     startAt: draft.startAt?.toISOString() ?? null,
     endAt: draft.endAt?.toISOString() ?? null,
-    startAtLabel: formatThaiDateTime(draft.startAt),
-    endAtLabel: formatThaiDateTime(draft.endAt),
+    startAtLabel: formatThaiDateTime(draft.startAt, meta.scheduleSkipped),
+    endAtLabel: formatThaiDateTime(draft.endAt, meta.scheduleSkipped),
     totalHours: draft.totalHours === null ? null : Number(draft.totalHours),
     result: draft.result,
     missingFields: missing,
     aiConfidence: draft.aiConfidence,
+    scheduleSkipped: meta.scheduleSkipped,
+    canSaveAsIs:
+      draft.status !== "READY_FOR_REVIEW"
+      && Boolean(draft.workTitle || draft.description)
+      && onlyScheduleFieldsMissing(missing),
     readyToConfirm: draft.status === "READY_FOR_REVIEW" && missing.length === 0,
   };
 }
@@ -521,8 +547,16 @@ export async function sendChatMessage(
   });
   const existingMeta = readDraftMeta(draft.confirmedFieldsJson);
 
-  const draftMissing = findMissingFields(draftFieldValues(draft, existingMeta), existingMeta.workSubtype);
-  if (draft.status === "READY_FOR_REVIEW" && draftMissing.length === 0 && isConfirmIntent(content)) {
+  const draftMissing = findMissingFields(
+    draftFieldValues(draft, existingMeta),
+    existingMeta.workSubtype,
+    { scheduleOptional: existingMeta.scheduleSkipped },
+  );
+  if (
+    draft.status === "READY_FOR_REVIEW"
+    && draftMissing.length === 0
+    && (isConfirmIntent(content) || isSaveAsIsIntent(content))
+  ) {
     await prisma.message.create({ data: { conversationId, role: "USER", content } });
     const confirmed = await confirmChatDraft(userId, conversationId);
     return {
@@ -541,6 +575,155 @@ export async function sendChatMessage(
     data: { conversationId, role: "USER", content },
   });
 
+  const wantsSaveAsIs = isSaveAsIsIntent(content);
+  const wantsSkipSchedule = isSkipScheduleIntent(content) || wantsSaveAsIs;
+  const hasDraftSubstance = Boolean(draft.workTitle || draft.description || draft.category);
+  const missingBeforeSkip = findMissingFields(
+    draftFieldValues(draft, existingMeta),
+    existingMeta.workSubtype,
+  );
+  const canCompleteBySkippingSchedule =
+    hasDraftSubstance
+    && (existingMeta.scheduleSkipped || onlyScheduleFieldsMissing(missingBeforeSkip) || wantsSkipSchedule);
+
+  // ข้ามวัน–เวลา / บันทึกตามนี้: ไม่เรียก AI ถ้ามีร่างแล้ว
+  if (wantsSkipSchedule && canCompleteBySkippingSchedule) {
+    const skipMeta: DraftMeta = {
+      ...existingMeta,
+      eventDate: null,
+      startTime: null,
+      endTime: null,
+      scheduleSkipped: true,
+    };
+    const skipDraft = {
+      workTitle: draft.workTitle,
+      category: draft.category,
+      torTopicId: draft.torTopicId,
+      description: draft.description,
+      relatedUnit: draft.relatedUnit,
+      location: draft.location,
+      startAt: null as Date | null,
+      endAt: null as Date | null,
+      totalHours: null as Prisma.Decimal | null,
+      result: draft.result ?? draft.description,
+    };
+    if (skipDraft.category && (!skipDraft.torTopicId || !topics.some((topic) => topic.id === skipDraft.torTopicId))) {
+      const inCategory = topics.filter((topic) => topic.category === skipDraft.category);
+      skipDraft.torTopicId = inCategory[0]?.id ?? null;
+    }
+    if (!skipMeta.workSubtype && skipDraft.category) {
+      skipMeta.workSubtype = inferSubtypeFromWorkText(
+        [skipDraft.description, skipDraft.workTitle].filter(Boolean).join(" "),
+        skipDraft.category,
+      );
+    }
+    const missing = findMissingFields(
+      {
+        ...skipDraft,
+        totalHours: null,
+        competency: skipMeta.competency,
+      },
+      skipMeta.workSubtype,
+      { scheduleOptional: true },
+    );
+    const ready = missing.length === 0;
+    await prisma.workDraft.update({
+      where: { id: draft.id },
+      data: {
+        ...skipDraft,
+        missingFieldsJson: missing,
+        confirmedFieldsJson: skipMeta,
+        status: ready ? "READY_FOR_REVIEW" : "COLLECTING",
+      },
+    });
+
+    // "บันทึกตามนี้" = ยืนยันบันทึกทันทีเมื่อครบแล้ว
+    if (ready && wantsSaveAsIs) {
+      const confirmed = await confirmChatDraft(userId, conversationId);
+      return {
+        ...confirmed.conversation,
+        ja: confirmed.ja,
+        topics: topics.map((topic) => ({
+          id: topic.id,
+          category: topic.category,
+          categoryLabel: categoryLabel[topic.category],
+          title: topic.title,
+        })),
+      };
+    }
+
+    const updatedDraft = await prisma.workDraft.findFirstOrThrow({
+      where: { id: draft.id },
+      include: { torTopic: { select: { title: true, category: true } } },
+    });
+    const topicTitle = updatedDraft.torTopic?.title
+      ?? (skipDraft.torTopicId ? topics.find((topic) => topic.id === skipDraft.torTopicId)?.title ?? null : null);
+    const reply = ready
+      ? buildReviewMessage({
+          workTitle: updatedDraft.workTitle,
+          category: updatedDraft.category,
+          workSubtype: skipMeta.workSubtype,
+          topicTitle,
+          description: updatedDraft.description,
+          location: updatedDraft.location,
+          relatedUnit: updatedDraft.relatedUnit,
+          competency: skipMeta.competency,
+          startAt: null,
+          endAt: null,
+          totalHours: null,
+          result: updatedDraft.result,
+          scheduleSkipped: true,
+        })
+      : composeCollectingReply({
+          acknowledgement: buildDraftProgressAck({
+            workTitle: updatedDraft.workTitle,
+            category: updatedDraft.category,
+            workSubtype: skipMeta.workSubtype,
+            topicTitle,
+            description: updatedDraft.description,
+            location: updatedDraft.location,
+            relatedUnit: updatedDraft.relatedUnit,
+            competency: skipMeta.competency,
+            result: updatedDraft.result,
+          }),
+          question: buildMissingFieldQuestion(missing, {
+            category: skipDraft.category,
+            topicCountForCategory: skipDraft.category
+              ? topics.filter((topic) => topic.category === skipDraft.category).length
+              : 0,
+            totalTopicCount: topics.length,
+            hasDraftSubstance: true,
+          }),
+          fallback: `ยังขาดข้อมูล: ${missing.join(", ")} กรุณาบอกเพิ่มเติม`,
+        });
+
+    await prisma.message.create({
+      data: {
+        conversationId,
+        role: "ASSISTANT",
+        content: reply,
+        metadataJson: {
+          latencyMs: 0,
+          missingFields: missing,
+          scheduleSkipped: true,
+          readyToConfirm: ready,
+          draftPreview: draftSnapshot(updatedDraft, skipMeta),
+        },
+      },
+    });
+    await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    const conversation = await getConversation(userId, conversationId);
+    return {
+      ...conversation,
+      topics: topics.map((topic) => ({
+        id: topic.id,
+        category: topic.category,
+        categoryLabel: categoryLabel[topic.category],
+        title: topic.title,
+      })),
+    };
+  }
+
   const recentMessages = await prisma.message.findMany({
     where: { conversationId },
     orderBy: { createdAt: "desc" },
@@ -556,6 +739,7 @@ export async function sendChatMessage(
 
   const startedAt = Date.now();
   let extraction;
+  let usedHeuristicFallback = false;
   try {
     extraction = await extractWork(
       userId,
@@ -595,6 +779,8 @@ export async function sendChatMessage(
           "3.2": "พัฒนาและปรับปรุงกระบวนการทำงาน",
         },
         antiLoop: "ห้ามถามฟิลด์ใน alreadyFilled และต้องสะสม eventDate/startTime/endTime ข้ามรอบ",
+        scheduleOptional:
+          "ถ้าผู้ใช้บอกว่าไม่ต้องระบุวันและช่วงเวลา ให้ถือว่า schedule ข้ามได้ อย่าถามวนเรื่องวันเวลา",
       },
       },
       { model: selectedModel },
@@ -602,23 +788,33 @@ export async function sendChatMessage(
   } catch (reason) {
     const detail = reason instanceof Error ? reason.message : "unknown error";
     console.error("[chat] extractWork failed:", detail);
-    const fallback = /timed?\s*out|timeout/i.test(detail)
-      ? `เกตเวย์ AI ตอบช้าเกินเวลา (โมเดล ${detail.match(/model=([^;]+)/)?.[1]?.trim() ?? "ที่ตั้งค่าไว้"}) กรุณาลองใหม่ หรือเปลี่ยนโมเดลที่ตั้งค่า AI เป็นตัวที่ตอบเร็วกว่า`
-      : /finish_reason=length/i.test(detail)
-        ? `โมเดล ${detail.match(/model=([^;]+)/)?.[1]?.trim() ?? "ที่ตั้งค่าไว้"} ตอบไม่จบเพราะใช้โควตาความยาวไปกับการคิด กรุณาลองใหม่ หรือเปลี่ยนไปใช้โมเดลที่คิดน้อยกว่าในตั้งค่า AI`
-      : /HTTP 400|ไม่อยู่ในรายการ|invalid model|API key|ตั้งค่า/i.test(detail)
-        ? `วิเคราะห์ไม่สำเร็จ: ตรวจการตั้งค่า AI / ชื่อโมเดล — ${detail.slice(0, 220)}`
-        : "ระบบยังวิเคราะห์ข้อความไม่สำเร็จ กรุณาตรวจการตั้งค่า AI หรือลองเล่ารายละเอียดงานอีกครั้ง";
-    await prisma.message.create({
-      data: {
-        conversationId,
-        role: "ASSISTANT",
-        content: fallback,
-        metadataJson: { latencyMs: Date.now() - startedAt, failed: true, error: detail.slice(0, 800) },
-      },
-    });
-    await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
-    throw new ApiError(502, "CHAT_AI_FAILED", fallback);
+
+    // ข้อความยาวพอ: ไม่บล็อกผู้ใช้ — สกัดท้องถิ่นแล้วถามฟิลด์ที่ขาดต่อ
+    if (content.replace(/\s+/g, " ").trim().length >= 40) {
+      extraction = normalizeWorkExtraction(buildHeuristicWorkExtraction(content));
+      usedHeuristicFallback = true;
+      console.warn("[chat] using heuristic work extraction fallback");
+    } else {
+      const fallback = /timed?\s*out|timeout/i.test(detail)
+        ? `เกตเวย์ AI ตอบช้าเกินเวลา (โมเดล ${detail.match(/model=([^;]+)/)?.[1]?.trim() ?? "ที่ตั้งค่าไว้"}) กรุณาลองใหม่ หรือเปลี่ยนโมเดลที่ตั้งค่า AI เป็นตัวที่ตอบเร็วกว่า`
+        : /finish_reason=length/i.test(detail)
+          ? `โมเดล ${detail.match(/model=([^;]+)/)?.[1]?.trim() ?? "ที่ตั้งค่าไว้"} ตอบไม่จบเพราะใช้โควตาความยาวไปกับการคิด กรุณาลองใหม่ หรือเปลี่ยนไปใช้โมเดลที่คิดน้อยกว่าในตั้งค่า AI`
+        : /did not return content/i.test(detail)
+          ? `เกตเวย์ AI คืนคำตอบว่างจากโมเดล ${detail.match(/model=([^;]+)/)?.[1]?.trim() ?? "ที่ตั้งค่าไว้"} กรุณาลองใหม่ หรือเปลี่ยนโมเดลที่ตั้งค่า AI`
+        : /HTTP 400|ไม่อยู่ในรายการ|invalid model|API key|ตั้งค่า/i.test(detail)
+          ? `วิเคราะห์ไม่สำเร็จ: ตรวจการตั้งค่า AI / ชื่อโมเดล — ${detail.slice(0, 220)}`
+          : "ระบบยังวิเคราะห์ข้อความไม่สำเร็จ กรุณาตรวจการตั้งค่า AI หรือลองเล่ารายละเอียดงานอีกครั้ง";
+      await prisma.message.create({
+        data: {
+          conversationId,
+          role: "ASSISTANT",
+          content: fallback,
+          metadataJson: { latencyMs: Date.now() - startedAt, failed: true, error: detail.slice(0, 800) },
+        },
+      });
+      await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+      throw new ApiError(502, "CHAT_AI_FAILED", fallback);
+    }
   }
   const latencyMs = Date.now() - startedAt;
 
@@ -627,6 +823,12 @@ export async function sendChatMessage(
   const inferredCategory = inferCategoryFromWorkText(
     [content, extraction.description, draft.description].filter(Boolean).join(" "),
   );
+  const skipSchedule = isSkipScheduleIntent(content) || existingMeta.scheduleSkipped;
+  const providedConcreteSchedule = Boolean(
+    normalizeEventDate(schedule.eventDate)
+    && schedule.startTime
+    && schedule.endTime,
+  ) || Boolean(extraction.startAt && extraction.endAt);
 
   const nextMeta: DraftMeta = {
     workSubtype: extraction.workSubtype ?? existingMeta.workSubtype,
@@ -634,6 +836,7 @@ export async function sendChatMessage(
     eventDate: normalizeEventDate(schedule.eventDate),
     startTime: schedule.startTime,
     endTime: schedule.endTime,
+    scheduleSkipped: providedConcreteSchedule ? false : skipSchedule,
   };
 
   const nextDraft = {
@@ -674,9 +877,18 @@ export async function sendChatMessage(
     nextMeta.competency = deriveCompetency(content);
   }
 
-  const resolved = resolveSchedule(nextMeta, nextDraft.startAt, nextDraft.endAt);
-  nextDraft.startAt = resolved.startAt;
-  nextDraft.endAt = resolved.endAt;
+  if (nextMeta.scheduleSkipped) {
+    nextDraft.startAt = null;
+    nextDraft.endAt = null;
+    nextDraft.totalHours = null;
+    nextMeta.eventDate = null;
+    nextMeta.startTime = null;
+    nextMeta.endTime = null;
+  } else {
+    const resolved = resolveSchedule(nextMeta, nextDraft.startAt, nextDraft.endAt);
+    nextDraft.startAt = resolved.startAt;
+    nextDraft.endAt = resolved.endAt;
+  }
 
   if (!nextMeta.workSubtype) {
     nextMeta.workSubtype = inferSubtypeFromWorkText(
@@ -699,7 +911,7 @@ export async function sendChatMessage(
     nextDraft.torTopicId = matched?.id ?? null;
   }
 
-  if (nextDraft.startAt && nextDraft.endAt && nextDraft.totalHours === null) {
+  if (!nextMeta.scheduleSkipped && nextDraft.startAt && nextDraft.endAt && nextDraft.totalHours === null) {
     try {
       nextDraft.totalHours = new Prisma.Decimal(calculateHours(nextDraft.startAt, nextDraft.endAt));
     } catch {
@@ -714,6 +926,7 @@ export async function sendChatMessage(
       competency: nextMeta.competency,
     },
     nextMeta.workSubtype,
+    { scheduleOptional: nextMeta.scheduleSkipped },
   );
   const ready = missing.length === 0;
   const topicTitle = nextDraft.torTopicId
@@ -749,16 +962,35 @@ export async function sendChatMessage(
         endAt: updatedDraft.endAt,
         totalHours: updatedDraft.totalHours === null ? null : Number(updatedDraft.totalHours),
         result: updatedDraft.result,
+        scheduleSkipped: nextMeta.scheduleSkipped,
       })
-    : buildMissingFieldQuestion(missing, {
-        ...nextMeta,
-        category: nextDraft.category,
-        topicCountForCategory,
-        totalTopicCount: topics.length,
-      })
-      || extraction.nextQuestion?.trim()
-      || extraction.userFacingReply.trim()
-      || `ยังขาดข้อมูล: ${missing.join(", ")} กรุณาบอกเพิ่มเติม`;
+    : composeCollectingReply({
+        acknowledgement: buildDraftProgressAck({
+          workTitle: updatedDraft.workTitle,
+          category: updatedDraft.category,
+          workSubtype: nextMeta.workSubtype,
+          topicTitle: updatedDraft.torTopic?.title ?? topicTitle,
+          description: updatedDraft.description,
+          location: updatedDraft.location,
+          relatedUnit: updatedDraft.relatedUnit,
+          competency: nextMeta.competency,
+          result: updatedDraft.result,
+          userMessage: content,
+          eventDate: nextMeta.eventDate,
+        }),
+        question:
+          buildMissingFieldQuestion(missing, {
+            ...nextMeta,
+            category: nextDraft.category,
+            topicCountForCategory,
+            totalTopicCount: topics.length,
+            hasDraftSubstance: Boolean(updatedDraft.workTitle || updatedDraft.description),
+          })
+          || extraction.nextQuestion?.trim()
+          || null,
+        aiReply: extraction.userFacingReply,
+        fallback: `ยังขาดข้อมูล: ${missing.join(", ")} กรุณาบอกเพิ่มเติม`,
+      });
 
   await prisma.message.create({
     data: {
@@ -772,6 +1004,7 @@ export async function sendChatMessage(
         workSubtype: nextMeta.workSubtype,
         readyToConfirm: ready,
         draftPreview: draftSnapshot(updatedDraft, nextMeta),
+        heuristicFallback: usedHeuristicFallback || undefined,
       },
     },
   });
@@ -808,17 +1041,19 @@ export async function confirmChatDraft(userId: string, conversationId: string) {
     throw new ApiError(409, "DRAFT_INCOMPLETE", "ข้อมูลยังไม่ครบ กรุณาตอบคำถามเพิ่มก่อนยืนยัน");
   }
 
-  const missing = findMissingFields(draftFieldValues(draft, meta), meta.workSubtype);
+  const missing = findMissingFields(
+    draftFieldValues(draft, meta),
+    meta.workSubtype,
+    { scheduleOptional: meta.scheduleSkipped },
+  );
   if (
     missing.length
     || !draft.workTitle
     || !draft.category
     || !draft.torTopicId
     || !draft.description
-    || !draft.startAt
-    || !draft.endAt
-    || draft.totalHours === null
     || !draft.result
+    || (!meta.scheduleSkipped && (!draft.startAt || !draft.endAt || draft.totalHours === null))
   ) {
     throw new ApiError(409, "DRAFT_INCOMPLETE", "ข้อมูลยังไม่ครบตามกฎหมวดงาน กรุณาตอบเพิ่มก่อนยืนยัน");
   }
@@ -836,8 +1071,9 @@ export async function confirmChatDraft(userId: string, conversationId: string) {
     location: draft.location ?? undefined,
     startAt: draft.startAt,
     endAt: draft.endAt,
-    totalHours: Number(draft.totalHours),
+    totalHours: draft.totalHours === null ? null : Number(draft.totalHours),
     result: resultWithCompetency,
+    scheduleSkipped: meta.scheduleSkipped,
   });
 
   await prisma.jaRecord.update({
@@ -875,12 +1111,15 @@ export async function confirmChatDraft(userId: string, conversationId: string) {
     `• รายละเอียด: ${record.description}`,
     `• สถานที่: ${record.location ?? "-"}`,
     `• ความรู้/ทักษะ/สมรรถนะ: ${meta.competency ?? "-"}`,
-    `• เริ่ม: ${formatThaiDateTime(record.startAt)}`,
-    `• สิ้นสุด: ${formatThaiDateTime(record.endAt)}`,
-    `• ชั่วโมง: ${record.totalHours.toString()}`,
+    `• เริ่ม: ${formatThaiDateTime(record.startAt, meta.scheduleSkipped)}`,
+    `• สิ้นสุด: ${formatThaiDateTime(record.endAt, meta.scheduleSkipped)}`,
+    `• ชั่วโมง: ${meta.scheduleSkipped && record.totalHours === null ? "ไม่ระบุ" : (record.totalHours?.toString() ?? "-")}`,
+    meta.scheduleSkipped ? "• หมายเหตุ: บันทึกโดยไม่ระบุวันและช่วงเวลา" : null,
     "",
     "ดูรายการและส่งออก Word/PDF ได้ที่หน้าตั้งค่า → รายการงาน หากต้องการบันทึกงานอื่น เล่าต่อได้เลย",
-  ].join("\n");
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
 
   await prisma.message.create({
     data: {

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { resolveEntraSuggestedRolesFromClaims } from "@/lib/auth/entra-roles";
 import {
   bangkokDateISO,
   buddhistYearToGregorian,
   calculateHours,
   composeBangkokDateTime,
   currentBuddhistYear,
+  extractThaiMonthYearHint,
   gregorianToBuddhistYear,
   parseThaiDateToISO,
   parseTimeRange,
@@ -12,7 +14,19 @@ import {
 import { normalizeTorExtraction, normalizeWorkExtraction } from "@/lib/validation/ai";
 import { isDataQueryIntent } from "@/lib/chat/data-query-intent";
 import { normalizeAiModelId, normalizeOpenAiBaseUrl, matchAllowedModel, resolveChatModelCatalog } from "@/lib/validation/ai-settings";
-import { buildMissingFieldQuestion, deriveWorkTitle, findMissingFields, parseCategoryAnswer } from "@/lib/validation/work";
+import {
+  buildDraftProgressAck,
+  buildHeuristicWorkExtraction,
+  buildMissingFieldQuestion,
+  composeCollectingReply,
+  deriveWorkTitle,
+  findMissingFields,
+  inferCategoryFromWorkText,
+  isSaveAsIsIntent,
+  isSkipScheduleIntent,
+  onlyScheduleFieldsMissing,
+  parseCategoryAnswer,
+} from "@/lib/validation/work";
 import { canReadJa } from "@/server/policies/ownership";
 import { sumJaHours } from "@/lib/report/ja-hours";
 import { topicIdentity } from "@/lib/tor/topic-identity";
@@ -75,6 +89,59 @@ describe("TORI core business rules", () => {
         "วันนี้มีการอบรมเรื่อง AI ตั้งแต่เวลา 08.30-16.30 ที่คณะพยาบาลมช เนื้อหาคือ การเลือกใช้งาน model",
       ),
     ).toBe("เข้าร่วมอบรมเรื่อง AI");
+  });
+  it("infers routine category for system-care narrative", () => {
+    expect(inferCategoryFromWorkText("งานดูแลระบบสารสนเทศและอัปเดต URL ประจำเดือน")).toBe("ROUTINE");
+  });
+  it("extracts Thai month-year hint without inventing a day", () => {
+    expect(extractThaiMonthYearHint("แผนงานมกราคม 2569")).toBe("มกราคม 2569");
+    expect(extractThaiMonthYearHint("วันที่ 15 มกราคม 2569")).toBeNull();
+  });
+  it("acknowledges draft substance before asking for datetime", () => {
+    const ack = buildDraftProgressAck({
+      workTitle: "งานดูแลระบบสารสนเทศ",
+      category: "ROUTINE",
+      description: "ดูแลระบบและอัปเดต URL ตามแผน",
+      userMessage: "แผนงานมกราคม 2569",
+    });
+    const question = buildMissingFieldQuestion(["startAt", "endAt"], {
+      hasDraftSubstance: true,
+    });
+    const reply = composeCollectingReply({ acknowledgement: ack, question });
+    expect(reply).toContain("รับทราบแล้ว");
+    expect(reply).toContain("งานดูแลระบบสารสนเทศ");
+    expect(reply).toContain("มกราคม 2569");
+    expect(reply).toContain("ขอวันและช่วงเวลา");
+  });
+  it("builds heuristic extraction for eDonation narrative when AI is unavailable", () => {
+    const extraction = buildHeuristicWorkExtraction(
+      "สรุปผลการดำเนินงาน ระบบ eDonation ดำเนินการพัฒนาระบบรับบริจาคออนไลน์ (eDonation) ตั้งแต่เดือนธันวาคม 2568 ถึงเมษายน 2569 รวมระยะเวลา 113 วัน โดยมีผลการดำเนินงานสำคัญดังนี้",
+    );
+    expect(extraction.category).toBe("DEVELOPMENT");
+    expect(extraction.workSubtype).toBe("C_3_2");
+    expect(extraction.workTitle?.toLowerCase()).toContain("edonation");
+    expect(extraction.description).toContain("eDonation");
+    expect(extraction.userFacingReply).toContain("รับทราบแล้ว");
+    expect(extraction.nextQuestion).toContain("วัน");
+  });
+  it("detects skip-schedule intent and omits datetime from missing fields", () => {
+    expect(isSkipScheduleIntent("ไม่ต้องระบุวันและช่วงเวลา")).toBe(true);
+    expect(isSkipScheduleIntent("ระบุวันเวลาไม่ได้")).toBe(true);
+    expect(isSaveAsIsIntent("บันทึกตามนี้")).toBe(true);
+    expect(onlyScheduleFieldsMissing(["startAt", "endAt", "totalHours"])).toBe(true);
+    expect(
+      findMissingFields(
+        {
+          workTitle: "eDonation",
+          category: "DEVELOPMENT",
+          torTopicId: "00000000-0000-4000-8000-000000000099",
+          description: "พัฒนาระบบ",
+          result: "เสร็จสิ้น",
+        },
+        "C_3_2",
+        { scheduleOptional: true },
+      ),
+    ).toEqual([]);
   });
   it("detects missing required draft fields", () => {
     expect(findMissingFields({ workTitle: "งาน", category: "ROUTINE" })).toContain("result");
@@ -311,5 +378,32 @@ describe("TORI core business rules", () => {
     expect(isDataQueryIntent("สรุปรายงานตอนนี้")).toBe(true);
     expect(isDataQueryIntent("วันนี้ฉันเข้าร่วมอบรม AI ที่คณะพยาบาล")).toBe(false);
     expect(isDataQueryIntent("ช่วยบันทึกงานให้หน่อย ฉันเพิ่งทำเสร็จ")).toBe(false);
+  });
+  it("maps Entra claims to ADMIN when email or app role matches", () => {
+    expect(
+      resolveEntraSuggestedRolesFromClaims({
+        email: "user@example.com",
+        adminEmails: ["admin@example.com"],
+      }),
+    ).toEqual(["EMPLOYEE"]);
+    expect(
+      resolveEntraSuggestedRolesFromClaims({
+        email: "admin@example.com",
+        adminEmails: ["admin@example.com"],
+      }),
+    ).toContain("ADMIN");
+    expect(
+      resolveEntraSuggestedRolesFromClaims({
+        email: "user@example.com",
+        roles: ["Admin"],
+      }),
+    ).toContain("ADMIN");
+    expect(
+      resolveEntraSuggestedRolesFromClaims({
+        email: "user@example.com",
+        groups: ["group-1"],
+        adminGroups: ["group-1"],
+      }),
+    ).toContain("ADMIN");
   });
 });

@@ -6,7 +6,7 @@ import { ApiError, errorResponse } from "@/lib/http/api-error";
 import { getRequestId } from "@/lib/http/request";
 import { sendChatMessage } from "@/server/services/chat-service";
 
-// AI work extraction; see the budget in lib/openai/client.
+/** อนุญาตให้เรียก AI ช้าได้สูงสุด ~5 นาที (เกตเวย์ภายใน) — งบเวลาจริงอยู่ใน lib/openai/client */
 export const maxDuration = 300;
 
 export async function POST(request: Request) {

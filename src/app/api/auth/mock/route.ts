@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+
 import { env } from "@/lib/env";
 import { setSessionCookie } from "@/lib/auth/session";
 import { upsertIdentity } from "@/server/services/auth-service";
@@ -34,6 +35,21 @@ export async function POST(request: Request) {
     console.warn(JSON.stringify({ level: "warn", event: "mock_login_used", message: "Demo sign-in used outside development" }));
   }
 
-  await setSessionCookie(await upsertIdentity({ subject: "dev", email: "demo.user@cmu.ac.th", employeeId: "DEV-0001", firstName: "ผู้ใช้", lastName: "สาธิต", position: "บุคลากร" }));
+  // suggestedRoles is what keeps ADMIN on this account — upsertIdentity now
+  // grants EMPLOYEE only when the caller does not ask for more.
+  await setSessionCookie(
+    await upsertIdentity({
+      provider: "mock",
+      subject: "dev",
+      email: "demo.user@cmu.ac.th",
+      employeeId: "DEV-0001",
+      firstName: "ผู้ใช้",
+      lastName: "สาธิต",
+      position: "บุคลากร",
+      suggestedRoles: ["EMPLOYEE", "ADMIN"],
+    }),
+  );
+  // request.url, not APP_URL — the latter throws you off a preview deployment
+  // back onto production.
   return NextResponse.redirect(new URL("/chat", request.url), 303);
 }

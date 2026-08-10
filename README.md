@@ -18,7 +18,7 @@ Local database data persists in the `tori_postgres_data` volume. To intentionall
 docker compose down --volumes
 ```
 
-The Compose defaults are for local development only. Before exposing the stack, set strong `POSTGRES_PASSWORD` and `AUTH_SECRET` values in an uncommitted `.env`, configure CMU/OpenAI as needed, and place a reverse proxy with TLS and request limits in front of the application. Uploaded TOR files persist in the Docker volume `tori_tor_files`.
+The Compose defaults are for local development only. Before exposing the stack, set strong `POSTGRES_PASSWORD` and `AUTH_SECRET` values in an uncommitted `.env`, configure Microsoft Entra and/or CMU plus OpenAI as needed, and place a reverse proxy with TLS and request limits in front of the application. Uploaded TOR files persist in the Docker volume `tori_tor_files`.
 
 ## Local setup
 
@@ -35,7 +35,19 @@ npm run dev
 
 Set `AUTH_SECRET` to a random value of at least 32 characters. The development-only mock sign-in is available on `/login`; it is unavailable when `NODE_ENV=production`.
 
-CMU OIDC requires `CMU_CLIENT_ID`, `CMU_CLIENT_SECRET`, `CMU_ISSUER`, and `CMU_REDIRECT_URI`. AI operations require both `OPENAI_API_KEY` and `OPENAI_MODEL`. TOR uploads use `LOCAL_STORAGE_PATH` (default `./storage`, or `/data/tori` in Docker). No integration secret belongs in source control.
+### Microsoft Entra ID
+
+Set in `.env` (and Azure App registration Redirect URI must match):
+
+- `ENTRA_TENANT_ID`
+- `ENTRA_CLIENT_ID`
+- `ENTRA_CLIENT_SECRET`
+- `ENTRA_REDIRECT_URI` (e.g. `http://localhost:4600/api/auth/entra/callback`)
+- Optional admin mapping: `ENTRA_ADMIN_EMAILS`, `ENTRA_ADMIN_GROUP_IDS`, or Entra App role `Admin`
+
+Each Entra account maps to one TORI user (1 คน = 1 โปรไฟล์). TOR/chat/JA stay scoped by `userId`. `/settings/ai` remains ADMIN-only and uses the shared system AI config.
+
+CMU OIDC (optional) requires `CMU_CLIENT_ID`, `CMU_CLIENT_SECRET`, `CMU_ISSUER`, and `CMU_REDIRECT_URI`. AI operations require both `OPENAI_API_KEY` and `OPENAI_MODEL` (or admin-configured keys). TOR uploads use `LOCAL_STORAGE_PATH` (default `./storage`, or `/data/tori` in Docker). No integration secret belongs in source control.
 
 ## Quality commands
 
