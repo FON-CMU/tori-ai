@@ -4,8 +4,11 @@ import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
+import { UserProfileCard } from "@/components/auth/user-profile-card";
+
 type Conversation = { id: string; title: string | null; updatedAt: string };
 type Message = { id: string; role: "user" | "assistant"; content: string; latencyMs?: number | null };
+type ChatUser = { displayName: string; email: string; isAdmin: boolean };
 
 function formatLatency(ms: number) {
   if (ms < 1000) return `${ms} ms`;
@@ -75,9 +78,11 @@ function formatRelative(iso: string) {
 export function ChatWorkspace({
   conversations: initialConversations,
   hasActiveTor,
+  user,
 }: {
   conversations: Conversation[];
   hasActiveTor: boolean;
+  user: ChatUser;
 }) {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -427,7 +432,15 @@ export function ChatWorkspace({
           </div>
         </div>
 
-        <div className="border-t border-[var(--apple-line)] p-3">
+        <div className="border-t border-[var(--apple-line)] p-3 space-y-1">
+          <UserProfileCard
+            compact
+            displayName={user.displayName}
+            email={user.email}
+            position={null}
+            unitName=""
+            isAdmin={user.isAdmin}
+          />
           <Link
             href="/settings"
             onClick={() => setSidebarOpen(false)}
@@ -460,7 +473,7 @@ export function ChatWorkspace({
             </span>
             <span className="hidden text-[var(--apple-line)] sm:inline">|</span>
             <span className="hidden truncate text-[13px] text-[var(--apple-muted)] sm:inline">
-              เลขาส่วนตัว
+              {user.displayName}
             </span>
           </div>
           <div className="ml-auto flex items-center gap-2">

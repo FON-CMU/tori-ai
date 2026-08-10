@@ -1,10 +1,13 @@
 import Link from "next/link";
+
+import { UserProfileCard } from "@/components/auth/user-profile-card";
 import { SettingsNav } from "@/components/settings/settings-nav";
 import { requirePageSession } from "@/lib/auth/session";
+import { getCurrentUserProfile } from "@/server/services/user-profile-service";
 
 export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
   const session = await requirePageSession();
-  const isAdmin = session.roles.includes("ADMIN");
+  const profile = await getCurrentUserProfile(session);
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-5 py-6 md:flex-row md:gap-8 md:py-8">
@@ -18,7 +21,15 @@ export default async function SettingsLayout({ children }: { children: React.Rea
             <p className="mt-1 text-sm text-stone-500">จัดการ TOR งาน และระบบ</p>
           </div>
 
-          <SettingsNav isAdmin={isAdmin} />
+          <UserProfileCard
+            displayName={profile.displayName}
+            email={profile.email}
+            position={profile.position}
+            unitName={profile.unitName}
+            isAdmin={profile.isAdmin}
+          />
+
+          <SettingsNav isAdmin={profile.isAdmin} />
 
           <form action="/api/auth/logout" method="post">
             <button
