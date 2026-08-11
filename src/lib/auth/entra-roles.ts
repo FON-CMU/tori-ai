@@ -40,6 +40,12 @@ export function resolveEntraSuggestedRolesFromClaims(input: {
   if (hasAdminRole || hasAdminGroup || hasAdminEmail) {
     suggested.add("ADMIN");
   }
+  if (claimRoles.some((role) => /^(supervisor|tori\.supervisor|tori-supervisor)$/i.test(role.trim()))) {
+    suggested.add("SUPERVISOR");
+  }
+  if (claimRoles.some((role) => /^(hr|tori\.hr|tori-hr)$/i.test(role.trim()))) {
+    suggested.add("HR");
+  }
 
   return [...suggested];
 }

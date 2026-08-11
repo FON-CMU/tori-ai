@@ -6,6 +6,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 FROM base AS dependencies
 COPY package.json package-lock.json ./
+# postinstall runs `prisma generate`, so the config and schema must exist first.
+COPY prisma.config.ts ./
+COPY prisma ./prisma
 # npm ci currently rejects npm's cross-platform optional dependency entries
 # (the lock was generated on macOS but the image is Linux). npm install still
 # honors package-lock.json while resolving those platform-specific packages.

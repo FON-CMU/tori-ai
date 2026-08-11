@@ -1,43 +1,90 @@
+import Link from "next/link";
+import type { Prisma } from "@/generated/prisma/client";
+import { JaReviewActions } from "@/components/dashboard/ja-review-actions";
 import { requirePageSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
+import { categoryLabel } from "@/server/services/ja-report-service";
+import { formatUserDisplayName, getCurrentUserProfile } from "@/server/services/user-profile-service";
 
-export default async function SettingsDashboardPage() {
-  const { userId } = await requirePageSession();
-  const [count, hours, categories] = await Promise.all([
-    prisma.jaRecord.count({ where: { userId, status: "CONFIRMED" } }),
-    prisma.jaRecord.aggregate({ where: { userId, status: "CONFIRMED" }, _sum: { totalHours: true } }),
-    prisma.jaRecord.groupBy({
-      by: ["category"],
-      where: { userId, status: "CONFIRMED" },
-      _count: true,
-      _sum: { totalHours: true },
-    }),
+const statusLabel = { DRAFT: "แบบร่าง", SUBMITTED: "รอตรวจทาน", REVISION_REQUIRED: "ต้องแก้ไข", CONFIRMED: "ผ่านการตรวจแล้ว", ARCHIVED: "เก็บถาวร" } as const;
+const periodOptions = [{ value: "30", label: "30 วัน" }, { value: "90", label: "90 วัน" }, { value: "365", label: "1 ปี" }, { value: "all", label: "ทั้งหมด" }] as const;
+
+function decimal(value: { toString(): string } | null | undefined) { const parsed = Number(value?.toString() ?? 0); return Number.isFinite(parsed) ? parsed : 0; }
+function percentChange(current: number, previous: number) { if (!previous) return current ? 100 : 0; return Math.round((current - previous) / previous * 100); }
+function Metric({ label, value, change, tone = "plain", hint }: { label: string; value: string | number; change?: number; tone?: "plain" | "teal" | "amber" | "red"; hint?: string }) { const colors = tone === "teal" ? "bg-gradient-to-br from-teal-800 to-teal-700 text-white shadow-lg shadow-teal-900/10" : tone === "amber" ? "border border-amber-200 bg-amber-50 text-amber-950" : tone === "red" ? "border border-red-200 bg-red-50 text-red-900" : "border border-stone-200 bg-white text-stone-900"; return <div className={`rounded-2xl p-5 ${colors}`}><div className="flex items-start justify-between gap-2"><p className="text-sm opacity-70">{label}</p>{change !== undefined ? <span className={`rounded-full px-2 py-0.5 text-xs ${change > 0 ? "bg-emerald-100 text-emerald-700" : change < 0 ? "bg-red-100 text-red-700" : "bg-stone-100 text-stone-600"}`}>{change > 0 ? "+" : ""}{change}%</span> : null}</div><strong className="mt-3 block text-3xl tracking-tight">{value}</strong>{hint ? <p className="mt-2 text-xs opacity-60">{hint}</p> : null}</div>; }
+
+export default async function SettingsDashboardPage({ searchParams }: { searchParams: Promise<{ userId?: string; period?: string }> }) {
+  const session = await requirePageSession();
+  const params = await searchParams;
+  const profile = await getCurrentUserProfile(session);
+  const isAdmin = session.roles.includes("ADMIN"); const isHr = session.roles.includes("HR"); const isSupervisor = session.roles.includes("SUPERVISOR");
+  const [{ now }] = await prisma.$queryRaw<Array<{ now: Date }>>`SELECT NOW() AS now`;
+  const nowMs = now.getTime();
+  const period = periodOptions.some((item) => item.value === params.period) ? params.period! : "90";
+  const days = period === "all" ? null : Number(period);
+  const rangeStart = days ? new Date(nowMs - days * 86_400_000) : null;
+  const previousStart = days ? new Date(nowMs - days * 2 * 86_400_000) : null;
+
+  const adminProfiles = isAdmin ? await prisma.user.findMany({ where: { status: "ACTIVE" }, orderBy: [{ unit: { name: "asc" } }, { firstName: "asc" }], select: { id: true, title: true, firstName: true, lastName: true, email: true, employeeId: true, position: true, status: true, unit: { select: { name: true } }, roles: { select: { role: { select: { code: true } } } } } }) : [];
+  const selectedPerson = isAdmin && params.userId ? adminProfiles.find((item) => item.id === params.userId) ?? null : null;
+  const selectedUserId = selectedPerson?.id;
+  const organizationView = !selectedUserId && (isAdmin || isHr || isSupervisor);
+
+  const userScope: Prisma.UserWhereInput = selectedUserId ? { id: selectedUserId } : isAdmin || isHr ? {} : isSupervisor ? { unitId: session.unitId } : { id: session.userId };
+  const jaOwnerScope: Prisma.JaRecordWhereInput = selectedUserId ? { userId: selectedUserId } : isAdmin || isHr ? {} : isSupervisor ? { user: { unitId: session.unitId } } : { userId: session.userId };
+  const torOwnerScope: Prisma.TorDocumentWhereInput = selectedUserId ? { userId: selectedUserId } : isAdmin || isHr ? {} : isSupervisor ? { user: { unitId: session.unitId } } : { userId: session.userId };
+  const topicOwnerScope: Prisma.TorTopicWhereInput = selectedUserId ? { userId: selectedUserId } : isAdmin || isHr ? {} : isSupervisor ? { user: { unitId: session.unitId } } : { userId: session.userId };
+  const dateScope: Prisma.JaRecordWhereInput = rangeStart ? { createdAt: { gte: rangeStart } } : {};
+  const previousDateScope: Prisma.JaRecordWhereInput = rangeStart && previousStart ? { createdAt: { gte: previousStart, lt: rangeStart } } : { id: "__none__" };
+
+  const [people, totalJobs, submitted, revisionRequired, confirmed, hours, previousConfirmed, previousHours, categories, latest, approvedRows, torPending, activeTopics, matchedTopics, inactivePeople, aiFailed] = await Promise.all([
+    prisma.user.count({ where: { ...userScope, status: "ACTIVE" } }),
+    prisma.jaRecord.count({ where: { ...jaOwnerScope, ...dateScope, status: { not: "ARCHIVED" } } }),
+    prisma.jaRecord.count({ where: { ...jaOwnerScope, ...dateScope, status: "SUBMITTED" } }),
+    prisma.jaRecord.count({ where: { ...jaOwnerScope, ...dateScope, status: "REVISION_REQUIRED" } }),
+    prisma.jaRecord.count({ where: { ...jaOwnerScope, ...dateScope, status: "CONFIRMED" } }),
+    prisma.jaRecord.aggregate({ where: { ...jaOwnerScope, ...dateScope, status: "CONFIRMED" }, _sum: { totalHours: true } }),
+    prisma.jaRecord.count({ where: { ...jaOwnerScope, ...previousDateScope, status: "CONFIRMED" } }),
+    prisma.jaRecord.aggregate({ where: { ...jaOwnerScope, ...previousDateScope, status: "CONFIRMED" }, _sum: { totalHours: true } }),
+    prisma.jaRecord.groupBy({ by: ["category"], where: { ...jaOwnerScope, ...dateScope, status: "CONFIRMED" }, _count: true, _sum: { totalHours: true } }),
+    prisma.jaRecord.findMany({ where: { ...jaOwnerScope, ...dateScope, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, take: 8, include: { user: { select: { firstName: true, lastName: true, unit: { select: { name: true } } } } } }),
+    prisma.jaRecord.findMany({ where: { ...jaOwnerScope, ...dateScope, status: "CONFIRMED" }, select: { createdAt: true, totalHours: true, torTopicId: true } }),
+    prisma.torDocument.count({ where: { ...torOwnerScope, status: "REVIEW_REQUIRED" } }),
+    prisma.torTopic.count({ where: { ...topicOwnerScope, status: "CONFIRMED", matchable: true, kind: "TOPIC", torDocument: { status: "ACTIVE" } } }),
+    prisma.jaRecord.findMany({ where: { ...jaOwnerScope, ...dateScope, status: "CONFIRMED", torTopicId: { not: null } }, distinct: ["torTopicId"], select: { torTopicId: true } }),
+    organizationView ? prisma.user.count({ where: { ...userScope, status: "ACTIVE", jaRecords: { none: { ...dateScope, status: "CONFIRMED" } } } }) : Promise.resolve(0),
+    isAdmin ? prisma.aiRun.count({ where: { status: "FAILED", ...(rangeStart ? { createdAt: { gte: rangeStart } } : {}) } }) : Promise.resolve(0),
   ]);
 
-  return (
-    <section>
-      <p className="text-sm font-medium text-teal-700">สรุป</p>
-      <h1 className="mt-2 text-3xl font-semibold">ภาพรวมงานของฉัน</h1>
-      <p className="mt-2 text-stone-600">ชั่วโมงและหมวดงานที่ยืนยันแล้ว</p>
-      <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        <div className="rounded-2xl bg-teal-800 p-6 text-white">
-          <p>งานที่ยืนยันแล้ว</p>
-          <strong className="mt-2 block text-4xl">{count}</strong>
-        </div>
-        <div className="rounded-2xl bg-amber-100 p-6">
-          <p>ชั่วโมงรวม</p>
-          <strong className="mt-2 block text-4xl">{hours._sum.totalHours?.toString() ?? "0"}</strong>
-        </div>
-      </div>
-      <div className="mt-6 grid gap-4 md:grid-cols-3">
-        {categories.map((item) => (
-          <div key={item.category} className="rounded-2xl border border-stone-200 bg-white p-5">
-            <p className="text-sm text-stone-500">{item.category}</p>
-            <strong className="mt-2 block text-2xl">{item._count} งาน</strong>
-            <p>{item._sum.totalHours?.toString() ?? 0} ชั่วโมง</p>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
+  const queueScope: Prisma.JaRecordWhereInput = selectedUserId ? { userId: selectedUserId } : isAdmin ? {} : { user: { unitId: session.unitId } };
+  const reviewQueue = isAdmin || isSupervisor ? await prisma.jaRecord.findMany({ where: { ...queueScope, status: "SUBMITTED" }, orderBy: { submittedAt: "asc" }, take: 20, include: { user: { select: { firstName: true, lastName: true, position: true, unit: { select: { name: true } } } }, torTopic: { select: { title: true } } } }) : [];
+  const overdue = reviewQueue.filter((item) => item.submittedAt && nowMs - item.submittedAt.getTime() > 3 * 86_400_000).length;
+  const totalHours = decimal(hours._sum.totalHours); const previousTotalHours = decimal(previousHours._sum.totalHours);
+  const coverage = activeTopics ? Math.min(100, Math.round(matchedTopics.length / activeTopics * 100)) : 0;
+
+  const chartStart = rangeStart ?? new Date(nowMs - 365 * 86_400_000); const bucketCount = 6; const bucketMs = Math.max(1, nowMs - chartStart.getTime()) / bucketCount;
+  const buckets = Array.from({ length: bucketCount }, (_, index) => ({ start: new Date(chartStart.getTime() + index * bucketMs), hours: 0, jobs: 0 }));
+  for (const row of approvedRows) { const index = Math.min(bucketCount - 1, Math.max(0, Math.floor((row.createdAt.getTime() - chartStart.getTime()) / bucketMs))); buckets[index].jobs += 1; buckets[index].hours += decimal(row.totalHours); }
+  const maxBucketHours = Math.max(1, ...buckets.map((item) => item.hours));
+  const roleTitle = isAdmin ? "ผู้ดูแลระบบ" : isHr ? "ฝ่ายทรัพยากรบุคคล" : isSupervisor ? "หัวหน้างาน" : "บุคลากร";
+  const viewingName = selectedPerson ? formatUserDisplayName(selectedPerson) : organizationView ? (isSupervisor ? profile.unitName : "องค์กร") : profile.displayName;
+  const periodQuery = `period=${period}`;
+
+  return <section className="pb-8">
+    <div className="rounded-3xl bg-gradient-to-br from-slate-950 via-slate-900 to-teal-950 p-6 text-white shadow-xl shadow-slate-900/10 md:p-8"><div className="flex flex-wrap items-end justify-between gap-5"><div><p className="text-xs font-semibold tracking-[0.2em] text-teal-300 uppercase">Professional Analytics · {roleTitle}</p><h1 className="mt-3 text-3xl font-semibold tracking-tight md:text-4xl">{viewingName}</h1><p className="mt-2 max-w-2xl text-sm text-slate-300">วิเคราะห์ผลงาน ชั่วโมง ความครอบคลุม TOR และสถานะการตรวจทานจากข้อมูลจริงในระบบ</p></div><div className="flex gap-2"><Link href="/chat" className="rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-slate-900">+ บันทึกงาน</Link>{selectedUserId ? <Link href={`/settings/dashboard?${periodQuery}`} className="rounded-xl border border-white/20 px-4 py-2.5 text-sm text-white">กลับภาพรวมองค์กร</Link> : null}</div></div></div>
+
+    <form className="mt-5 grid gap-3 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm md:grid-cols-[1fr_220px_auto]" method="get">{isAdmin ? <label className="text-sm"><span className="mb-1.5 block font-medium text-stone-700">โปรไฟล์บุคลากร</span><select name="userId" defaultValue={selectedUserId ?? ""} className="h-11 w-full rounded-xl border border-stone-300 bg-white px-3"><option value="">ทุกคนในองค์กร</option>{adminProfiles.map((item) => <option key={item.id} value={item.id}>{formatUserDisplayName(item)} · {item.unit.name}</option>)}</select></label> : <div><p className="text-sm font-medium text-stone-700">ขอบเขตข้อมูล</p><p className="mt-2 text-sm text-stone-500">{viewingName}</p></div>}<label className="text-sm"><span className="mb-1.5 block font-medium text-stone-700">ช่วงเวลา</span><select name="period" defaultValue={period} className="h-11 w-full rounded-xl border border-stone-300 bg-white px-3">{periodOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button className="h-11 self-end rounded-xl bg-teal-700 px-5 text-sm font-medium text-white">วิเคราะห์ข้อมูล</button></form>
+
+    {selectedPerson ? <div className="mt-5 grid gap-4 rounded-2xl border border-stone-200 bg-white p-5 md:grid-cols-[1fr_auto]"><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-semibold">{formatUserDisplayName(selectedPerson)}</h2><span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs text-emerald-700">{selectedPerson.status}</span>{selectedPerson.roles.map((item) => <span key={item.role.code} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">{item.role.code}</span>)}</div><p className="mt-2 text-sm text-stone-600">{selectedPerson.position ?? "ไม่ระบุตำแหน่ง"} · {selectedPerson.unit.name}</p><p className="mt-1 text-sm text-stone-500">{selectedPerson.email} · รหัส {selectedPerson.employeeId}</p></div><div className="text-left md:text-right"><p className="text-xs text-stone-400">TOR COVERAGE</p><strong className="mt-1 block text-3xl text-teal-700">{coverage}%</strong></div></div> : null}
+
+    <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Metric label={organizationView ? "บุคลากรที่ใช้งาน" : "งานทั้งหมด"} value={organizationView ? people : totalJobs} hint={`ช่วง ${periodOptions.find((item) => item.value === period)?.label}`} /><Metric label="รอตรวจทาน" value={submitted} tone={submitted ? "amber" : "plain"} hint={overdue ? `${overdue} รายการเกิน 3 วัน` : "ไม่มีรายการเกิน SLA"} /><Metric label="ผ่านการตรวจแล้ว" value={confirmed} change={days ? percentChange(confirmed, previousConfirmed) : undefined} tone="teal" /><Metric label="ชั่วโมงที่อนุมัติ" value={totalHours.toLocaleString("th-TH")} change={days ? percentChange(totalHours, previousTotalHours) : undefined} hint="เทียบช่วงเวลาก่อนหน้า" /></div>
+
+    <div className="mt-6 grid gap-5 xl:grid-cols-[1.45fr_1fr]"><div className="rounded-2xl border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">แนวโน้มชั่วโมงที่อนุมัติ</h2><p className="mt-1 text-sm text-stone-500">แบ่งช่วงเวลาที่เลือกเป็น 6 ช่วง</p></div><span className="rounded-full bg-teal-50 px-3 py-1 text-xs text-teal-700">{confirmed} งาน</span></div><div className="mt-6 flex h-52 items-end gap-3">{buckets.map((item, index) => <div key={index} className="flex min-w-0 flex-1 flex-col items-center justify-end"><span className="mb-2 text-xs font-medium text-stone-600">{item.hours ? item.hours.toLocaleString("th-TH") : ""}</span><div className="w-full rounded-t-lg bg-gradient-to-t from-teal-700 to-teal-400" style={{ height: `${Math.max(item.hours ? 10 : 2, item.hours / maxBucketHours * 150)}px` }} /><span className="mt-2 truncate text-[10px] text-stone-400">{item.start.toLocaleDateString("th-TH", { day: "numeric", month: "short" })}</span></div>)}</div></div><div className="rounded-2xl border border-stone-200 bg-white p-5"><h2 className="text-lg font-semibold">TOR Coverage</h2><div className="mt-5 flex items-center gap-5"><div className="grid h-28 w-28 shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(#0f766e ${coverage}%, #e7e5e4 0)` }}><div className="grid h-20 w-20 place-items-center rounded-full bg-white"><strong className="text-2xl">{coverage}%</strong></div></div><div><p className="text-sm text-stone-600">{matchedTopics.length} จาก {activeTopics} หัวข้อ TOR มีผลงานที่อนุมัติแล้ว</p><p className="mt-2 text-xs text-stone-400">ยิ่งครอบคลุมมาก แสดงว่ามีหลักฐานผลงานครบตามภาระงาน</p></div></div></div></div>
+
+    <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_1.35fr]"><div className="rounded-2xl border border-stone-200 bg-white p-5"><h2 className="text-lg font-semibold">สัดส่วนงานตาม TOR</h2><div className="mt-4 space-y-4">{categories.length ? categories.map((item) => { const categoryHours = decimal(item._sum.totalHours); const width = totalHours ? Math.max(4, Math.round(categoryHours / totalHours * 100)) : 0; return <div key={item.category}><div className="flex justify-between gap-3 text-sm"><span>{categoryLabel[item.category]}</span><span className="text-stone-500">{item._count} งาน · {categoryHours.toLocaleString("th-TH")} ชม.</span></div><div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-stone-100"><div className="h-full rounded-full bg-teal-600" style={{ width: `${width}%` }} /></div></div>; }) : <p className="text-sm text-stone-500">ยังไม่มีงานที่ผ่านการตรวจ</p>}</div></div><div className="rounded-2xl border border-stone-200 bg-white p-5"><h2 className="text-lg font-semibold">รายการล่าสุด</h2><div className="mt-3 divide-y divide-stone-100">{latest.length ? latest.map((item) => <div key={item.id} className="flex items-start justify-between gap-4 py-3"><div className="min-w-0"><p className="truncate font-medium">{item.workTitle}</p>{organizationView || isAdmin ? <p className="text-xs text-stone-500">{item.user.firstName} {item.user.lastName} · {item.user.unit.name}</p> : null}{item.status === "REVISION_REQUIRED" && item.reviewComment ? <p className="mt-1 text-xs text-red-700">เหตุผล: {item.reviewComment}</p> : null}</div><span className={`shrink-0 rounded-full px-2.5 py-1 text-xs ${item.status === "CONFIRMED" ? "bg-emerald-50 text-emerald-700" : item.status === "REVISION_REQUIRED" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-800"}`}>{statusLabel[item.status]}</span></div>) : <p className="py-5 text-sm text-stone-500">ยังไม่มีรายการงาน</p>}</div></div></div>
+
+    <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5"><h2 className="text-lg font-semibold">Action Center</h2><p className="mt-1 text-sm text-stone-500">ประเด็นที่ควรดำเนินการต่อจากข้อมูลในช่วงที่เลือก</p><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><div className="rounded-xl bg-amber-50 p-4"><p className="text-sm text-amber-800">รอตรวจเกิน 3 วัน</p><strong className="mt-2 block text-2xl text-amber-950">{overdue}</strong></div><div className="rounded-xl bg-red-50 p-4"><p className="text-sm text-red-700">ต้องแก้ไข</p><strong className="mt-2 block text-2xl text-red-900">{revisionRequired}</strong></div><div className="rounded-xl bg-sky-50 p-4"><p className="text-sm text-sky-700">TOR รอตรวจเนื้อหา</p><strong className="mt-2 block text-2xl text-sky-900">{torPending}</strong></div>{organizationView ? <div className="rounded-xl bg-stone-100 p-4"><p className="text-sm text-stone-600">บุคลากรยังไม่มีผลงานอนุมัติ</p><strong className="mt-2 block text-2xl">{inactivePeople}</strong></div> : <div className="rounded-xl bg-stone-100 p-4"><p className="text-sm text-stone-600">AI ทำงานล้มเหลว</p><strong className="mt-2 block text-2xl">{aiFailed}</strong></div>}</div></div>
+
+    {isAdmin || isSupervisor ? <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">คิวรอตรวจทาน</h2><p className="mt-1 text-sm text-stone-500">{isAdmin ? "ADMIN ตรวจรายการได้ทุกหน่วยงาน" : "เฉพาะบุคลากรในหน่วยงานของคุณ"}</p></div><span className="rounded-full bg-amber-100 px-3 py-1 text-sm text-amber-900">{reviewQueue.length} รายการ</span></div><div className="mt-4 space-y-3">{reviewQueue.length ? reviewQueue.map((item) => <article key={item.id} className="rounded-xl border border-stone-200 p-4"><h3 className="font-semibold">{item.workTitle}</h3><p className="mt-1 text-sm text-stone-500">{item.user.firstName} {item.user.lastName} · {item.user.position ?? "ไม่ระบุตำแหน่ง"} · {item.user.unit.name}</p><p className="mt-2 text-sm text-stone-700">{item.description}</p><p className="mt-1 text-xs text-stone-500">หัวข้อ TOR: {item.torTopic?.title ?? "ไม่ระบุ"} · {item.totalHours?.toString() ?? "-"} ชั่วโมง</p><JaReviewActions id={item.id} /></article>) : <p className="rounded-xl bg-stone-50 p-5 text-center text-sm text-stone-500">ไม่มีรายการรอตรวจ</p>}</div></div> : null}
+  </section>;
 }

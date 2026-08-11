@@ -31,7 +31,7 @@ import {
   parseTopicChoiceIndex,
   selectTopicCandidates,
 } from "@/lib/validation/work";
-import { canReadJa } from "@/server/policies/ownership";
+import { canReadJa, canViewDashboard } from "@/server/policies/ownership";
 
 describe("TORI core business rules", () => {
   it("converts Buddhist years", () => expect(buddhistYearToGregorian(2569)).toBe(2026));
@@ -185,6 +185,18 @@ describe("TORI core business rules", () => {
   });
   it("prevents cross-user JA reads", () => {
     expect(canReadJa({ userId: "a", unitId: "u", roles: ["EMPLOYEE"] }, { userId: "b" })).toBe(false);
+  });
+  it("allows admin to view another profile dashboard but blocks employees", () => {
+    expect(canViewDashboard({ userId: "admin", unitId: "hq", roles: ["ADMIN"] }, { userId: "employee", unitId: "u" })).toBe(true);
+    expect(canViewDashboard({ userId: "a", unitId: "u", roles: ["EMPLOYEE"] }, { userId: "b", unitId: "u" })).toBe(false);
+  });
+  it("maps Entra supervisor and HR app roles", () => {
+    const roles = resolveEntraSuggestedRolesFromClaims({
+      email: "reviewer@example.com",
+      roles: ["TORI.Supervisor", "TORI.HR"],
+    });
+    expect(roles).toContain("SUPERVISOR");
+    expect(roles).toContain("HR");
   });
   it("normalizes Gemini display names to model ids", () => {
     expect(normalizeAiModelId("Gemini 3.6 Flash")).toBe("gemini-3.6-flash");

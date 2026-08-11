@@ -72,6 +72,8 @@ enum WorkDraftStatus {
 
 enum JaStatus {
   DRAFT
+  SUBMITTED
+  REVISION_REQUIRED
   CONFIRMED
   ARCHIVED
 }
@@ -128,7 +130,8 @@ model User {
   torTopics    TorTopic[]
   conversations Conversation[]
   workDrafts   WorkDraft[]
-  jaRecords    JaRecord[]
+  jaRecords    JaRecord[] @relation("JaOwner")
+  reviewedJaRecords JaRecord[] @relation("JaReviewer")
   auditLogs    AuditLog[]  @relation("AuditActor")
   aiRuns       AiRun[]
   createdAt    DateTime    @default(now())
@@ -303,7 +306,9 @@ model JaRecord {
   id                   String            @id @default(uuid()) @db.Uuid
   runningNumber        String            @unique
   userId               String            @db.Uuid
-  user                 User              @relation(fields: [userId], references: [id])
+  user                 User              @relation("JaOwner", fields: [userId], references: [id])
+  reviewedById         String?           @db.Uuid
+  reviewedBy           User?             @relation("JaReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
   torDocumentId        String?           @db.Uuid
   torDocument          TorDocument?      @relation(fields: [torDocumentId], references: [id], onDelete: SetNull)
   torTopicId           String?           @db.Uuid
@@ -320,6 +325,9 @@ model JaRecord {
   totalHours           Decimal?          @db.Decimal(6, 2)
   result               String
   status               JaStatus          @default(DRAFT)
+  submittedAt          DateTime?
+  reviewedAt           DateTime?
+  reviewComment        String?
   confirmedAt          DateTime?
   versions             JaRecordVersion[]
   createdAt            DateTime          @default(now())
@@ -328,6 +336,8 @@ model JaRecord {
   @@index([userId, status])
   @@index([userId, category])
   @@index([userId, startAt])
+  @@index([status, submittedAt])
+  @@index([reviewedById])
   @@index([createdAt])
 }
 

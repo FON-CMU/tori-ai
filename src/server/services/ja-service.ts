@@ -90,8 +90,8 @@ export async function confirmJa(
         runningNumber,
         userId,
         torDocumentId: topic.torDocumentId,
-        status: "CONFIRMED",
-        confirmedAt: new Date(),
+        status: "SUBMITTED",
+        submittedAt: new Date(),
       },
     });
     const snapshot = JSON.parse(JSON.stringify(record)) as Prisma.InputJsonValue;
@@ -101,19 +101,81 @@ export async function confirmJa(
         version: 1,
         snapshotJson: snapshot,
         changedBy: userId,
-        changeReason: scheduleSkipped ? "ยืนยันรายการ (ไม่ระบุวันเวลา)" : "ยืนยันรายการ",
+        changeReason: scheduleSkipped ? "ส่งตรวจรายการ (ไม่ระบุวันเวลา)" : "ส่งตรวจรายการ",
       },
     });
     await tx.auditLog.create({
       data: {
         actorId: userId,
-        action: "JA_CONFIRMED",
+        action: "JA_SUBMITTED",
         objectType: "JaRecord",
         objectId: record.id,
         afterJson: snapshot,
       },
     });
     return record;
+  });
+}
+
+export async function reviewJa(
+  actor: { userId: string; unitId: string; roles: string[] },
+  jaId: string,
+  raw: unknown,
+) {
+  const input = raw as { action?: unknown; comment?: unknown };
+  const action = input.action === "APPROVE" || input.action === "REQUEST_REVISION" ? input.action : null;
+  if (!action) throw new ApiError(400, "INVALID_REVIEW_ACTION", "คำสั่งตรวจทานไม่ถูกต้อง");
+  const comment = typeof input.comment === "string" ? input.comment.trim().slice(0, 2000) : "";
+  if (action === "REQUEST_REVISION" && !comment) {
+    throw new ApiError(400, "REVIEW_COMMENT_REQUIRED", "กรุณาระบุเหตุผลที่ส่งกลับแก้ไข");
+  }
+  if (!actor.roles.some((role) => ["SUPERVISOR", "ADMIN"].includes(role))) {
+    throw new ApiError(403, "FORBIDDEN", "เฉพาะหัวหน้างานหรือผู้ดูแลระบบเท่านั้นที่ตรวจทานได้");
+  }
+
+  const record = await prisma.jaRecord.findFirst({
+    where: {
+      id: jaId,
+      status: "SUBMITTED",
+      ...(actor.roles.includes("ADMIN") ? {} : { user: { unitId: actor.unitId } }),
+    },
+  });
+  if (!record) throw new ApiError(404, "JA_NOT_FOUND", "ไม่พบรายการรอตรวจในขอบเขตที่คุณรับผิดชอบ");
+
+  const before = JSON.parse(JSON.stringify(record)) as Prisma.InputJsonValue;
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.jaRecord.update({
+      where: { id: record.id },
+      data: {
+        status: action === "APPROVE" ? "CONFIRMED" : "REVISION_REQUIRED",
+        confirmedAt: action === "APPROVE" ? new Date() : null,
+        reviewedAt: new Date(),
+        reviewedById: actor.userId,
+        reviewComment: comment || null,
+      },
+    });
+    const after = JSON.parse(JSON.stringify(updated)) as Prisma.InputJsonValue;
+    const versionCount = await tx.jaRecordVersion.count({ where: { jaRecordId: record.id } });
+    await tx.jaRecordVersion.create({
+      data: {
+        jaRecordId: record.id,
+        version: versionCount + 1,
+        snapshotJson: after,
+        changedBy: actor.userId,
+        changeReason: action === "APPROVE" ? "อนุมัติรายการ" : `ส่งกลับแก้ไข: ${comment}`,
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId: actor.userId,
+        action: action === "APPROVE" ? "JA_APPROVED" : "JA_REVISION_REQUESTED",
+        objectType: "JaRecord",
+        objectId: record.id,
+        beforeJson: before,
+        afterJson: after,
+      },
+    });
+    return { id: updated.id, status: updated.status };
   });
 }
 
