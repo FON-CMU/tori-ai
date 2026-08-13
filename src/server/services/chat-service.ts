@@ -1790,7 +1790,7 @@ export async function confirmChatDraft(
     `• ชั่วโมง: ${meta.scheduleSkipped && record.totalHours === null ? "ไม่ระบุ" : (record.totalHours?.toString() ?? "-")}`,
     meta.scheduleSkipped ? "• หมายเหตุ: บันทึกโดยไม่ระบุวันและช่วงเวลา" : null,
     "",
-    "ดูรายการและส่งออก Word/PDF ได้ที่หน้าตั้งค่า → รายการงาน หากต้องการบันทึกงานอื่น เล่าต่อได้เลย",
+    "ดูได้ทันทีที่ตั้งค่า → รายงานผลการปฏิบัติงานจริง (ไม่ต้องรอแอดมินอนุมัติ) หากต้องการบันทึกงานอื่น เล่าต่อได้เลย",
   ]
     .filter((line) => line !== null)
     .join("\n");

@@ -90,7 +90,9 @@ export async function confirmJa(
         runningNumber,
         userId,
         torDocumentId: topic.torDocumentId,
-        status: "SUBMITTED",
+        // ยืนยันจากแชท = บันทึกลงรายงานทันที ไม่รอแอดมินอนุมัติ
+        status: "CONFIRMED",
+        confirmedAt: new Date(),
         submittedAt: new Date(),
       },
     });
@@ -101,13 +103,13 @@ export async function confirmJa(
         version: 1,
         snapshotJson: snapshot,
         changedBy: userId,
-        changeReason: scheduleSkipped ? "ส่งตรวจรายการ (ไม่ระบุวันเวลา)" : "ส่งตรวจรายการ",
+        changeReason: scheduleSkipped ? "ยืนยันรายการ (ไม่ระบุวันเวลา)" : "ยืนยันรายการ",
       },
     });
     await tx.auditLog.create({
       data: {
         actorId: userId,
-        action: "JA_SUBMITTED",
+        action: "JA_CONFIRMED",
         objectType: "JaRecord",
         objectId: record.id,
         afterJson: snapshot,

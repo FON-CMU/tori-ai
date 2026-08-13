@@ -187,27 +187,76 @@ export async function loadJaReportDocument(
     include: {
       user: { include: { unit: true } },
       topics: { orderBy: [{ sortOrder: "asc" }, { title: "asc" }] },
-      jaRecords: {
-        where: { userId, status: "CONFIRMED" },
-        orderBy: { startAt: "asc" },
-      },
     },
   });
   if (!document) throw new ApiError(404, "TOR_NOT_FOUND", "ไม่พบเอกสาร TOR");
   const torDoc = document;
   const topics = torDoc.topics;
+  const topicIds = new Set(topics.map((topic) => topic.id));
+
+  // รวม JA ของเอกสารนี้ + ของ TOR ปีเดียวกัน (กรณีอัปโหลดใหม่แล้วเอกสารเก่ายังถูก archive)
+  const jaRecords = await prisma.jaRecord.findMany({
+    where: {
+      userId,
+      status: { in: ["CONFIRMED", "SUBMITTED"] },
+      OR: [
+        { torDocumentId: torDoc.id },
+        { torDocument: { userId, year: torDoc.year } },
+        { torTopicId: { in: [...topicIds] } },
+      ],
+    },
+    orderBy: [{ startAt: "asc" }, { createdAt: "asc" }],
+  });
+
+  const foreignTopicIds = [
+    ...new Set(
+      jaRecords
+        .map((ja) => ja.torTopicId)
+        .filter((id): id is string => typeof id === "string" && !topicIds.has(id)),
+    ),
+  ];
+  const oldTopics = foreignTopicIds.length
+    ? await prisma.torTopic.findMany({
+        where: { id: { in: foreignTopicIds } },
+        select: { id: true, title: true, category: true, code: true },
+      })
+    : [];
+  const oldTopicById = new Map(oldTopics.map((topic) => [topic.id, topic]));
 
   const jaByTopic = new Map<string, JaReportEntry[]>();
   const orphanJas: JaReportEntry[] = [];
-  for (const ja of torDoc.jaRecords) {
+  const seenJa = new Set<string>();
+  for (const ja of jaRecords) {
+    if (seenJa.has(ja.id)) continue;
+    seenJa.add(ja.id);
     const entry = toJaEntry(ja);
-    if (!ja.torTopicId) {
-      orphanJas.push(entry);
+    if (ja.torTopicId && topicIds.has(ja.torTopicId)) {
+      const list = jaByTopic.get(ja.torTopicId) ?? [];
+      list.push(entry);
+      jaByTopic.set(ja.torTopicId, list);
       continue;
     }
-    const list = jaByTopic.get(ja.torTopicId) ?? [];
-    list.push(entry);
-    jaByTopic.set(ja.torTopicId, list);
+    // พยายามจับคู่หัวข้อใหม่ด้วยชื่อเดิมถ้า topic id เปลี่ยนหลังวิเคราะห์ TOR ใหม่
+    const oldTopic = ja.torTopicId ? oldTopicById.get(ja.torTopicId) : undefined;
+    if (oldTopic) {
+      const rematch = topics.find(
+        (topic) =>
+          topic.kind === "TOPIC"
+          && topic.matchable
+          && topic.category === oldTopic.category
+          && (
+            (oldTopic.code && topic.code === oldTopic.code)
+            || topic.title.trim().toLowerCase() === oldTopic.title.trim().toLowerCase()
+          ),
+      );
+      if (rematch) {
+        const list = jaByTopic.get(rematch.id) ?? [];
+        list.push(entry);
+        jaByTopic.set(rematch.id, list);
+        continue;
+      }
+    }
+    orphanJas.push(entry);
   }
 
   const byParent = new Map<string | null, typeof topics>();
@@ -326,10 +375,34 @@ export async function listJaReportDocuments(userId: string) {
       _count: {
         select: {
           topics: true,
-          jaRecords: { where: { status: "CONFIRMED" } },
         },
       },
     },
   });
-  return docs;
+
+  const years = [...new Set(docs.map((doc) => doc.year))];
+  const yearJaRows = years.length
+    ? await prisma.jaRecord.findMany({
+        where: {
+          userId,
+          status: { in: ["CONFIRMED", "SUBMITTED"] },
+          torDocument: { userId, year: { in: years } },
+        },
+        select: { id: true, torDocument: { select: { year: true } } },
+      })
+    : [];
+  const jaCountByYear = new Map<number, number>();
+  for (const row of yearJaRows) {
+    const year = row.torDocument?.year;
+    if (year == null) continue;
+    jaCountByYear.set(year, (jaCountByYear.get(year) ?? 0) + 1);
+  }
+
+  return docs.map((doc) => ({
+    ...doc,
+    _count: {
+      topics: doc._count.topics,
+      jaRecords: jaCountByYear.get(doc.year) ?? 0,
+    },
+  }));
 }
